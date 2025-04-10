@@ -14,6 +14,16 @@ The blog contains various posts that delve into different aspects of Azure AI Fo
 
 - **Azure AI Foundry Networking**: This post covers the networking and security features of Azure AI Foundry, including the management of hubs and projects, networking isolation modes, and identity and access management.
 
+## Azure AI Foundry Networking
+
+This repository contains resources and documentation for Azure AI Foundry Networking.
+
+### Network Isolation Modes
+
+![Network Isolation Modes](images/NetworkIsolationModes.png)
+
+For more details, refer to the [azure-ai-foundry-networking.md](azure-ai-foundry-networking.md) file.
+
 ## How to Contribute
 
 We welcome contributions from the community! If you would like to contribute to the blog, please follow these steps:
