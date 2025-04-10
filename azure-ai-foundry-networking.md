@@ -22,9 +22,9 @@ Networking is a critical aspect of Azure AI Foundry’s security model, ensuring
 
 ### Managed Virtual Network and Outbound Isolation Modes
 
-When you create an Azure AI Foundry hub, you have the option to enable a [managed virtual network](https://learn.microsoft.com/en-us/azure/ai-foundry/how-to/configure-managed-network?tabs=portal) for all the hub’s compute resources. 
+When you create an Azure AI Foundry hub, you have the option to enable a [managed virtual network](https://learn.microsoft.com/en-us/azure/ai-foundry/how-to/configure-managed-network?tabs=portal) for all the hub’s compute resources.
 
-/images/NetworkIsolationModes.png
+![Network Isolation Modes](images/NetworkIsolationModes.png)
 
 This managed VNet is automatically used by any projects under the hub, providing a central egress control point for all project compute. Azure AI Foundry offers three modes of network isolation for outbound traffic from this managed virtual network:
 
