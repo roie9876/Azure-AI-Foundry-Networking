@@ -287,12 +287,21 @@ Now let's explain each one.
 
 Here's the practical guide: **which options do you combine for your scenario?**
 
-### Scenario 1: "Just getting started, minimal security"
+### Scenario 1a: "Just getting started, minimal security"
 - **Agent tier:** Basic
 - **Inbound:** Public access (default)
 - **Outbound:** N/A (Microsoft-managed compute)
 - **Options used:** None — just create an account and project
 - **Template:** [40-basic-agent-setup](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/40-basic-agent-setup)
+
+### Scenario 1b: "Basic agents, but private portal access"
+- **Agent tier:** Basic
+- **Inbound:** Option A (Private Link) — disable public access, add private endpoint
+- **Outbound:** N/A (Microsoft-managed compute, Azure backbone)
+- **Options used:** A
+- **Template:** [10-private-network-basic](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/10-private-network-basic)
+
+> ℹ️ **Basic ≠ public only.** You can add a private endpoint to a Basic setup. The "Basic" label refers to data storage (Microsoft-managed multitenant) — not the network access level. What you CAN'T do with Basic is BYO resources, VNet injection, or CMK.
 
 ### Scenario 2: "Production, data in my tenant, but no VNet needed"
 - **Agent tier:** Standard (BYO Storage, Cosmos DB, AI Search)
