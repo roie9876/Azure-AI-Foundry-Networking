@@ -465,7 +465,7 @@ Not all agent tools work behind a VNet. Here's the current status:
 | Admin assigning BYO resource permissions | Role Based Access Administrator | Resource group |
 | Developers creating/editing agents | Azure AI User | Project |
 
-**Project managed identity roles (Standard setup):**
+### Project managed identity roles (Standard setup)
 
 | Resource | Role |
 |----------|------|
@@ -475,6 +475,43 @@ Not all agent tools work behind a VNet. Here's the current status:
 | Blob container `<workspaceId>-azureml-blobstore` | Storage Blob Data Contributor |
 | Blob container `<workspaceId>-agents-blobstore` | Storage Blob Data Owner |
 | Cosmos DB database `enterprise_memory` | Cosmos DB Built-in Data Contributor |
+
+### Custom RBAC for Cosmos DB Data Plan (Private Networks)
+
+When your Cosmos DB operates within a private network setup, built-in roles might lack exact data-plane query access. You may need to create and assign a strictly-scoped **Custom Role** to your project's managed identity so it can read/query items over the private network. 
+
+Run this PowerShell script (replace the variables with your own environments data):
+
+```powershell
+$resourceGroupName = "<your-resource-group>"
+$accountName = "<your-cosmos-db-account-name>"
+
+# 1. Create a custom Data-Plane Role
+New-AzCosmosDBSqlRoleDefinition -AccountName $accountName `
+  -ResourceGroupName $resourceGroupName `
+  -Type CustomRole `
+  -RoleName CosmosDBDataPlanRole `
+  -DataAction @( `
+    'Microsoft.DocumentDB/databaseAccounts/readMetadata', `
+    'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/items/read', `
+    'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/executeQuery', `
+    'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/readChangeFeed' `
+  ) `
+  -AssignableScope "/"
+
+# 2. Get the new Role's ID (You can pull the ID from the output of the command above)
+$customRoleDefinitionId = "/subscriptions/<your-subscription-id>/resourceGroups/$resourceGroupName/providers/Microsoft.DocumentDB/databaseAccounts/$accountName/sqlRoleDefinitions/<new-role-guid>"
+
+# 3. Assign the new role to the Foundry Project Managed Identity 
+# (You can find the Principal ID under Identity in your AI Project)
+$principalId = "<your-ai-project-managed-identity-object-id>"
+
+New-AzCosmosDBSqlRoleAssignment -AccountName $accountName `
+   -ResourceGroupName $resourceGroupName `
+   -RoleDefinitionId $customRoleDefinitionId `
+   -Scope "/" `
+   -PrincipalId $principalId
+```
 
 ---
 
