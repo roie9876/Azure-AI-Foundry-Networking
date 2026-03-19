@@ -387,6 +387,18 @@ This is a critical question: **when do YOU need to create and manage Azure resou
 
 For N projects under one account, you need N × 3000 RU/s.
 
+### Behind the Scenes: What is a Capability Host?
+
+If you dig into the Azure portal or use the REST API, you will encounter an object called a **[Capability Host](https://learn.microsoft.com/en-us/azure/foundry/agents/concepts/capability-hosts?view=foundry-classic)**. 
+
+* **What is it?** The Capability Host is the underlying infrastructure engine that actually runs your AI agents. It acts as the bridge that binds your agent code to your BYO data resources (Cosmos DB, Storage, AI Search) and the LLM models. 
+* **Why it matters for networking:** When you use **Option B (BYO VNet Injection)**, the Capability Host is the actual physical resource component that gets injected into your delegated `Agent Subnet`.
+
+> **💡 Pro Tip: Stuck Deletions & Cleanups** 
+> Capability hosts are **immutable**. If you change your network setup, you must delete the capability host and recreate it. Occasionally, a capability host can get "stuck" in a deleting or failed state, making it impossible to delete from the UI (which can prevent you from dropping or changing your subnets). 
+> 
+> If you get stuck with a locked capability host, there is a manual cleanup procedure. You can use the `deleteCaphost.sh` script or direct Azure CLI REST API calls to force-delete the "zombie" capability host object so you can start fresh. (Check the official GitHub/Microsoft troubleshooting guides for the exact cleanup script).
+
 ---
 
 ## Part 6: Agent Tools — Network Support Matrix
@@ -438,7 +450,6 @@ Not all agent tools work behind a VNet. Here's the current status:
 - **Avoid 172.17.0.0/16:** Reserved by Docker
 - **One agent subnet per Foundry resource** — can't share subnets
 - **Subnet size:** Minimum `/27` (32 IPs), recommended `/24` (256 IPs)
-- **Same region:** All resources (Cosmos DB, Storage, AI Search, Foundry, VNet) must be in the same region
 - **Same subscription:** Private endpoints must match the VNet subscription
 - **Capability hosts are immutable:** Can't update after creation — delete and recreate
 - **Managed VNet is one-way:** Once enabled, can't disable or switch modes
