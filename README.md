@@ -1,176 +1,153 @@
-# Microsoft Foundry Networking and Security Guide
+# Microsoft Foundry Networking — The Complete Guide
 
-> **Updated March 2026** — This guide reflects the current Microsoft Foundry (formerly Azure AI Foundry / Azure AI Studio) networking model, including the Foundry Account + Project architecture, Agent Service setup tiers, and VNet injection for outbound network isolation.
-
-## What is Microsoft Foundry?
-
-Microsoft Foundry is Azure's platform for building, deploying, and managing generative AI applications. Think of it as a managed workspace where your teams build AI agents, deploy models (like GPT-4o), and connect to data — all with enterprise security built in.
-
-The platform has two levels:
-
-- **Foundry Account** — The top-level resource. This is where admins configure security, networking, and shared settings. Everything you set here (like "no public internet access") automatically applies to all projects underneath.
-- **Projects** — Isolated workspaces under the account. Each team or application gets its own project. Data, agents, and permissions are separated between projects, but they all inherit the account's security rules.
+> **Updated March 2026** — Covers all networking options for Microsoft Foundry (formerly Azure AI Foundry), including Private Link, Managed VNet, BYO VNet injection, and Network Security Perimeter.
 
 ---
 
-## Understanding Network Isolation — The Big Picture
+## Why Is This So Confusing?
 
-When you deploy Microsoft Foundry in an enterprise, you need to think about network security in **three areas**. This diagram shows all three:
+If you've been reading Microsoft's docs and feeling lost — you're not alone. Microsoft has **5 separate documentation pages** about Foundry networking, and it's unclear how they relate to each other. Here's the problem: **Foundry is not one thing — it's made up of several components, and each component has its own networking story.**
+
+This guide puts it all in one place.
+
+---
+
+## Part 1: The Components — What Needs Network Protection?
+
+Before talking about network options, you need to understand that Microsoft Foundry has **four different components**, and each one has separate networking considerations:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Microsoft Foundry                            │
+│                                                                 │
+│  ┌──────────────┐  ┌──────────────┐  ┌────────────────────────┐│
+│  │ 1. Foundry   │  │ 2. Foundry   │  │ 3. Agent Service       ││
+│  │    Portal    │  │    Resource  │  │    (compute that runs  ││
+│  │    (UI)      │  │    (APIs)    │  │     your agents)       ││
+│  └──────────────┘  └──────────────┘  └────────────────────────┘│
+│                                                                 │
+│  ┌─────────────────────────────────────────────────────────────┐│
+│  │ 4. Dependent Azure Resources                               ││
+│  │    (Storage, Cosmos DB, AI Search, Key Vault, OpenAI, etc.)││
+│  └─────────────────────────────────────────────────────────────┘│
+└─────────────────────────────────────────────────────────────────┘
+```
+
+| Component | What it is | Network question it raises |
+|-----------|-----------|---------------------------|
+| **Foundry Portal** | The web UI at ai.azure.com where you manage projects | How do your users access the portal? |
+| **Foundry Resource** (Account + Project) | The Azure resource with APIs and settings | Can it be reached from the internet? Who can call its APIs? |
+| **Agent Service compute** | The container that runs your AI agents, evaluations, prompt flows | Where does agent code execute? What can it reach? |
+| **Dependent resources** | Azure Storage, Cosmos DB, AI Search, Azure OpenAI, Key Vault | Are these resources accessible from the internet or only privately? |
+
+**Each of these components has its own network surface**, and you need to secure all of them. That's why there are so many docs — each one focuses on a different piece.
+
+---
+
+## Part 2: The Three Network Directions
+
+Now that you know the components, there are **three directions** of network traffic to secure:
 
 ![Plan for Network Isolation](images/plan-network-isolation-diagram.png)
 
-Let's break down what each area means:
+### Direction 1: Inbound — Who can reach your Foundry resource?
 
-### 1. Inbound Access — Who can reach your Foundry resource?
+**This is about your users and client applications connecting to Foundry.**
 
-This controls **who can connect to your Foundry account and portal**. By default, your Foundry resource is accessible from the internet. For enterprise deployments, you want to lock this down so only people inside your network can access it.
+By default, your Foundry resource is accessible from the public internet. Anyone with the right credentials can call the APIs or open the portal. For enterprise deployments, you want to restrict this.
 
-**How it works:** You set the **Public Network Access (PNA) flag** on your Foundry resource:
-- **Disabled** — Nobody can reach it from the internet. Access is only possible through a **private endpoint** inside your virtual network. This is the most secure option.
-- **Selected IP addresses** — Only specific IP ranges can connect (e.g., your office IPs).
-- **All networks** — Open to the internet (default, fine for testing, not for production).
+**How you lock it down:** You set the **Public Network Access (PNA) flag** on your Foundry resource:
 
-When you disable public access and add a private endpoint, your Foundry portal and APIs get a private IP address inside your VNet. Your data scientists connect through VPN, ExpressRoute, or a Bastion jump box — never through the public internet.
+| PNA Setting | What it means |
+|-------------|--------------|
+| **All networks** | Anyone on the internet can connect (default — fine for testing) |
+| **Selected IPs** | Only specific IP ranges can connect (e.g., your office IP) |
+| **Disabled** | No public access at all — only reachable through a **private endpoint** in your VNet |
 
-### 2. Outbound Access — How Foundry reaches other Azure services
+When you disable public access and add a private endpoint, your Foundry resource gets a private IP address inside your virtual network. Your team connects through VPN, ExpressRoute, or a Bastion jump box — never over the public internet.
 
-This controls **how the Foundry resource communicates with its dependent Azure services** — things like Azure Storage, Key Vault, and Azure OpenAI. By default these communications go over the Azure backbone (encrypted, but using public endpoints).
+> **This applies to ALL setup tiers** (Basic, Standard, Standard+VNet). You can always add a private endpoint, regardless of which agent tier you chose.
 
-For maximum security, you add **private endpoints** for each of these services, so all traffic stays within your private network — even traffic to Azure's own services.
+### Direction 2: Outbound from Foundry — How it reaches Azure services
 
-### 3. Outbound Access from Agent Compute — How your agents reach data
+**This is about how the Foundry resource talks to its dependent Azure services** (Storage, Key Vault, Azure OpenAI, etc.).
 
-This is the newest and most important part. When your AI agents run, they need to reach data sources, APIs, and tools. This traffic comes from the **Agent client** — the compute that actually executes your agents.
+By default, these communications go over the Azure backbone network using public endpoints — encrypted, but technically "public." For maximum security, you create **private endpoints** for each dependent service, so all traffic stays fully private.
 
-**How it works:** Microsoft Foundry uses **VNet injection** — it places the Agent client directly inside a subnet in **your own virtual network**. This means:
-- Your agents run **inside your network**, not in some Microsoft-managed network you can't see
-- Agents can only reach what your network allows — you have full control
-- All traffic to Azure PaaS services (Storage, Cosmos DB, AI Search) goes through private endpoints
-- You can add a firewall to inspect and control all outbound traffic
+### Direction 3: Outbound from Agent compute — How your agents reach data
 
----
+**This is the big one.** When your AI agents run, they need to reach data sources, APIs, and tools. This traffic comes from the **Agent Service compute** — the container that executes your agent code.
 
-## Agent Service Setup Tiers
-
-The level of network isolation available depends on which Agent Service tier you choose. There are three options:
-
-| Capability | Basic | Standard | Standard + BYO VNet |
-|-----------|-------|----------|---------------------|
-| Get started quickly, no resource management | ✅ | | |
-| Your data stays in your own Azure resources | | ✅ | ✅ |
-| Customer Managed Keys (CMK) | | ✅ | ✅ |
-| Full network isolation (agents in your VNet) | | | ✅ |
-
-> **Important:** You can add a private endpoint (inbound isolation) to **any** tier. The table above is about **outbound** isolation — controlling where your agents' traffic goes.
-
-### Basic Setup
-
-Microsoft manages everything. Agent data (conversations, files) is stored in Microsoft's multitenant infrastructure. Good for prototyping — just create an account and project and start building agents. No networking configuration needed.
-
-### Standard Setup
-
-You **bring your own Azure resources** to store agent data in your tenant:
-
-| Your Resource | What it stores |
-|---------------|---------------|
-| **Azure Storage** | Files uploaded by users and developers |
-| **Azure AI Search** | Vector stores (embeddings for search) |
-| **Azure Cosmos DB for NoSQL** | Conversations, agent metadata, message history |
-
-This gives you full data sovereignty — all data stays in resources you own and control. You need at least **3000 RU/s** on Cosmos DB (1000 per container × 3 containers). For multiple projects, multiply accordingly.
-
-### Standard Setup + BYO Virtual Network
-
-Everything from Standard, **plus** your agents run inside your own virtual network. This is the full enterprise-grade setup covered in the rest of this guide.
+**This is where it gets complicated**, because Microsoft offers **three different options** for securing this traffic. That's the next section.
 
 ---
 
-## The Private Agent Network Architecture
+## Part 3: The Four Network Options (And When To Use Each)
 
-When you deploy with the Standard + BYO VNet setup, the architecture looks like this:
+Here's where people get confused. Microsoft offers **four different networking approaches**, and they're documented in four separate pages. Here's how they map:
 
-![Private Network Isolation Architecture](images/private-network-isolation.png)
+```
+                        ┌──────────────────────────────────────┐
+                        │     INBOUND (to Foundry)             │
+                        │                                      │
+                        │  Option A: Private Link              │
+                        │  Option D: Network Security          │
+                        │            Perimeter (NSP)           │
+                        └──────────────────────────────────────┘
 
-Here's what each component does:
+                        ┌──────────────────────────────────────┐
+                        │     OUTBOUND (from Agent compute)    │
+                        │                                      │
+                        │  Option B: BYO VNet Injection (GA)   │
+                        │  Option C: Managed VNet (Preview)    │
+                        └──────────────────────────────────────┘
+```
 
-**Your Virtual Network** contains two subnets:
+### Quick Comparison
 
-| Subnet | Purpose | Size |
-|--------|---------|------|
-| **Agent Subnet** | This is where Microsoft injects the Agent client container into your network. It's delegated to `Microsoft.App/environments`. Your agents, evaluations, and prompt flows run here. | `/24` recommended (256 IPs), `/27` minimum (32 IPs) |
-| **Private Endpoint Subnet** | Hosts the private endpoints — the private "doors" into each Azure service. Each private endpoint gets a private IP address in this subnet. | Sized based on number of endpoints |
+| | **Option A: Private Link** | **Option B: BYO VNet Injection** | **Option C: Managed VNet** | **Option D: NSP** |
+|---|---|---|---|---|
+| **What it secures** | Inbound access to Foundry | Outbound from Agent compute | Outbound from Agent compute | Inbound + Outbound (data-plane) |
+| **Status** | GA | GA | **Preview** | **Preview** |
+| **Complexity** | Low | Medium-High | Low-Medium | Medium |
+| **Who manages the network** | You create PE in your VNet | You provide VNet + subnets | Microsoft manages the VNet | Microsoft manages the perimeter |
+| **Agent runs in** | N/A (inbound only) | Your VNet subnet | Microsoft-managed VNet | N/A (policy layer) |
+| **Can reach on-prem** | N/A | Yes (agents are in your VNet) | Via Application Gateway only | N/A |
+| **Your own firewall** | N/A | Yes | No (Microsoft-managed FW) | N/A |
+| **Use it when** | You need private access to the portal/APIs | Full network control, compliance, on-prem access | Simpler setup, no own VNet needed | You want a policy-based perimeter across multiple Azure services |
+| **Docs** | [Private Link](https://learn.microsoft.com/en-us/azure/foundry/how-to/configure-private-link?view=foundry) | [VNet for Agents](https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/virtual-networks) | [Managed VNet](https://learn.microsoft.com/en-us/azure/foundry/how-to/managed-virtual-network?view=foundry) | [NSP](https://learn.microsoft.com/en-us/azure/foundry/how-to/add-foundry-to-network-security-perimeter?view=foundry) |
 
-**Private Endpoints** connect to:
-- **Foundry Account** — so the agent client can talk to the Foundry management plane
-- **Azure Storage** — so agents can read/write files
-- **Azure AI Search** — so agents can use vector search
-- **Azure Cosmos DB** — so agents can store conversations and metadata
+> **Important:** These are NOT mutually exclusive. You typically **combine** Option A (Private Link for inbound) with either Option B or C (for outbound). Option D (NSP) is a complementary policy layer on top.
 
-**Private DNS Zones** make it all work transparently. When your agent code calls `yourstorageaccount.blob.core.windows.net`, the private DNS zone resolves it to the private endpoint IP (e.g., `192.168.1.10`) instead of a public IP. No code changes needed — the same URLs work, they just resolve privately.
-
-**On-premises connectivity** is straightforward because agents are already in your VNet:
-- **ExpressRoute** — Private dedicated connection from your data center
-- **VPN Gateway** (Site-to-Site or Point-to-Site) — Encrypted tunnel over the internet
-- **Azure Bastion** — Browser-based RDP/SSH jump box for developer access
-
-Since your agents run inside your VNet, they can natively reach anything your VNet can reach — including on-premises resources through VPN or ExpressRoute. No special proxy or gateway needed.
-
-### How the Full Network Looks End-to-End
-
-![Agent and Evaluation Network Isolation Architecture](images/agent-eval-network-diagram.png)
-
-This diagram shows the complete flow:
-- **Left side:** Your agents and evaluations run in the delegated agent subnet
-- **Center:** Private endpoints provide secure, private connections to each Azure service
-- **Right side:** All your BYO resources (Storage, Cosmos DB, AI Search) have public access disabled — they only accept traffic through the private endpoints
-- **Bottom:** Your on-premises network connects through ExpressRoute or VPN
-- **Optional:** An Azure Firewall can sit in front to inspect and control all egress traffic
+Now let's explain each one.
 
 ---
 
-## Inbound Isolation — Step by Step
+### Option A: Private Link (Inbound Isolation) — GA
 
-### Creating a Private Endpoint
+**What it does:** Creates a private endpoint in your VNet that gives your Foundry resource a private IP address. Your team accesses the Foundry portal and APIs through this private IP instead of the public internet.
 
-**For a new Foundry resource:**
-1. In the [Azure portal](https://portal.azure.com/), search for **Foundry** and select **Create a resource**.
-2. On the **Networking** tab, set public access to **Disabled**.
-3. Select **+ Add private endpoint** — choose the same region as your VNet, select your VNet and subnet.
-4. Complete the wizard and create the resource.
+**Think of it like:** A private door into Foundry that only exists inside your building (VNet). The public door gets locked.
 
-**For an existing project:**
-1. Go to your project in the Azure portal.
-2. Navigate to **Resource Management → Networking → Private endpoint connections**.
-3. Select **+ Private endpoint** and configure with your VNet and subnet.
+**How to set it up:**
 
-### DNS — How Private Endpoints Resolve
+1. In the [Azure portal](https://portal.azure.com/), go to your Foundry resource → **Networking**.
+2. Set Public network access to **Disabled**.
+3. Select **+ Private endpoint** → choose your VNet and subnet.
+4. Azure creates a private IP and updates DNS automatically.
 
-When you create a private endpoint, Azure automatically:
-1. Creates a `privatelink` DNS alias for your resource
-2. Sets up a Private DNS Zone with an A record pointing to the private IP
+**DNS is the key:** When your team types `yourfoundry.cognitiveservices.azure.com`, the Private DNS Zone resolves it to the private IP (e.g., `10.0.1.5`) instead of a public IP. Same URL, private path. No code changes needed.
 
-**The result:**
-- From **inside** your VNet: `yourfoundry.cognitiveservices.azure.com` resolves to `192.168.1.5` (private)
-- From **outside** your VNet: the same URL resolves to the public IP (blocked if public access is disabled)
+**Your team connects via:**
 
-If you use a **custom DNS server** (e.g., on-premises Active Directory DNS), configure it to forward `privatelink.*` queries to Azure DNS at `168.63.129.16`.
+| Method | Best for |
+|--------|----------|
+| **[VPN Gateway](https://learn.microsoft.com/en-us/azure/vpn-gateway/vpn-gateway-about-vpngateways)** (Point-to-Site) | Individual developers on laptops |
+| **[VPN Gateway](https://learn.microsoft.com/en-us/azure/vpn-gateway/vpn-gateway-about-vpngateways)** (Site-to-Site) | Connecting an entire office |
+| **[ExpressRoute](https://learn.microsoft.com/en-us/azure/expressroute/)** | Dedicated private connection from data center |
+| **[Azure Bastion](https://learn.microsoft.com/en-us/azure/bastion/bastion-overview)** | Quick access via a jump box VM in the browser |
 
-### Validating Your Setup
-
-1. Confirm private endpoint status is **Approved** in the portal under Networking.
-2. From a VM inside the VNet, run:
-   ```
-   nslookup <your-foundry-endpoint-hostname>
-   ```
-   Verify it returns a private IP (10.x, 172.16-31.x, or 192.168.x).
-3. Test connectivity:
-   ```powershell
-   Test-NetConnection <private-endpoint-ip-address> -Port 443
-   ```
-
-### Trusted Azure Services
-
-Even with public access disabled, you can allow specific Azure services to reach Foundry using their managed identities:
+**Trusted Azure services** can bypass the firewall if you enable it — they authenticate via managed identity:
 
 | Service | Resource Provider |
 |---------|------------------|
@@ -180,78 +157,204 @@ Even with public access disabled, you can allow specific Azure services to reach
 
 ![Foundry Portal Firewall Settings](images/foundry-portal-firewall.png)
 
-### How to Connect — VPN, ExpressRoute, or Bastion
-
-Once public access is disabled, your team needs a way in:
-
-| Method | Best for |
-|--------|----------|
-| **[Azure VPN Gateway](https://learn.microsoft.com/en-us/azure/vpn-gateway/vpn-gateway-about-vpngateways)** (Point-to-Site) | Individual developers connecting from laptops |
-| **[Azure VPN Gateway](https://learn.microsoft.com/en-us/azure/vpn-gateway/vpn-gateway-about-vpngateways)** (Site-to-Site) | Connecting your entire office network |
-| **[ExpressRoute](https://learn.microsoft.com/en-us/azure/expressroute/)** | High-bandwidth, low-latency private connection from your data center |
-| **[Azure Bastion](https://learn.microsoft.com/en-us/azure/bastion/bastion-overview)** | Quick access via a jump box VM — connect through your browser |
-
 ---
 
-## Outbound Isolation — VNet Injection
+### Option B: BYO VNet Injection (Outbound Isolation) — GA
 
-### Setting Up VNet Injection
+**What it does:** Places the Agent Service compute (the container running your agents) directly inside **your own virtual network**. You provide the VNet and subnets. Microsoft injects the agent container into your subnet.
 
-1. In the Azure portal, create a Foundry resource.
-2. On the **Storage** tab, select **Select resources** under Agent service — choose or create your Storage, AI Search, and Cosmos DB.
-3. On the **Network** tab, set public access to **Disabled** and add your private endpoint.
-4. Under **Virtual network injection**, select your VNet and the subnet delegated to `Microsoft.App/environments`.
-5. Complete the wizard.
+**Think of it like:** Instead of your agents running on some Microsoft server you can't see, they run *inside your own network*. You control what they can reach.
 
-> **Note:** For production deployments, use the **Bicep or Terraform templates** — they handle all the networking, private endpoints, DNS zones, and RBAC automatically:
-> - **Bicep:** [15-private-network-standard-agent-setup](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/15-private-network-standard-agent-setup)
-> - **Terraform:** [15b-private-network-standard-agent-setup-byovnet](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-terraform/15b-private-network-standard-agent-setup-byovnet)
-> - **Hybrid/on-prem:** [19-hybrid-private-resources-agent-setup](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/19-hybrid-private-resources-agent-setup)
+**This is the full enterprise solution.** It's GA (production-ready) and gives you maximum control.
 
-### DNS Zones You Need
+![Private Network Isolation Architecture](images/private-network-isolation.png)
 
-Each Azure service needs its own Private DNS Zone. Here's the complete list:
+**What gets deployed in your VNet:**
 
-| Resource | Private DNS Zone | Public DNS Zone |
-|----------|-----------------|-----------------|
-| Foundry Account | `privatelink.cognitiveservices.azure.com` | `cognitiveservices.azure.com` |
-| Foundry Account | `privatelink.openai.azure.com` | `openai.azure.com` |
-| Foundry Account | `privatelink.services.ai.azure.com` | `services.ai.azure.com` |
-| Azure AI Search | `privatelink.search.windows.net` | `search.windows.net` |
-| Azure Cosmos DB | `privatelink.documents.azure.com` | `documents.azure.com` |
-| Azure Storage | `privatelink.blob.core.windows.net` | `blob.core.windows.net` |
+| Subnet | What's in it | Size |
+|--------|-------------|------|
+| **Agent Subnet** | Your agents run here. Delegated to `Microsoft.App/environments`. Microsoft injects the agent container. | `/24` recommended (256 IPs), `/27` minimum |
+| **Private Endpoint Subnet** | Private endpoints for Storage, Cosmos DB, AI Search, Foundry Account. Each gets a private IP. | Sized per number of endpoints |
 
-To create a conditional forwarder in your DNS Server to Azure DNS, use the Azure DNS Virtual Server IP: `168.63.129.16`.
+**How traffic flows:**
+- Agent code runs in the agent subnet → calls Azure Storage → goes through the private endpoint in the PE subnet → reaches Storage over private IP. Never touches the public internet.
+- Agent calls Azure OpenAI → goes through the Foundry private endpoint → private IP. Same story.
+- Agent calls an on-premises API → goes through your VPN/ExpressRoute → reaches your data center. Works natively because the agent is already in your VNet.
 
-### Verifying the Deployment
+**Required Private DNS Zones** (so URLs resolve to private IPs):
 
-1. **Subnet delegation:** In the portal, go to VNet → Subnets — the agent subnet should show delegation to `Microsoft.App/environments`.
-2. **Public access disabled:** Check each resource (Foundry, AI Search, Storage, Cosmos DB) — public network access should be **Disabled**.
-3. **DNS resolution:** From inside the VNet, run `nslookup` on each endpoint — all should resolve to private IPs.
-4. **Agent test:** Open your Foundry project from within the VNet and create a test agent.
+| For | Private DNS Zone |
+|-----|-----------------|
+| Foundry Account | `privatelink.cognitiveservices.azure.com` |
+| Foundry Account | `privatelink.openai.azure.com` |
+| Foundry Account | `privatelink.services.ai.azure.com` |
+| Azure AI Search | `privatelink.search.windows.net` |
+| Azure Cosmos DB | `privatelink.documents.azure.com` |
+| Azure Storage | `privatelink.blob.core.windows.net` |
+| Azure Storage | `privatelink.file.core.windows.net` |
 
----
+**Deployment:** Use the Bicep or Terraform templates — they create everything:
+- **Bicep:** [15-private-network-standard-agent-setup](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/15-private-network-standard-agent-setup)
+- **Terraform:** [15b-private-network-standard-agent-setup-byovnet](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-terraform/15b-private-network-standard-agent-setup-byovnet)
+- **Hybrid/on-prem:** [19-hybrid-private-resources-agent-setup](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/19-hybrid-private-resources-agent-setup)
 
-## Hub-and-Spoke with Firewall
-
-For enterprises that need to inspect and control all outbound traffic, use a **hub-and-spoke** topology:
+**Add a firewall** with hub-and-spoke if you need egress control:
 
 ![Hub-and-Spoke Firewall Configuration](images/network-hub-spoke-diagram.png)
 
-- **Hub VNet** — Contains a shared Azure Firewall (or third-party NVA) that inspects all traffic
-- **Spoke VNet** — Contains your Foundry resources, agent subnet, and private endpoints
-- The two VNets are **peered**, and a route table on the spoke forces all traffic through the firewall
+---
 
-When using Azure Firewall with VNet-injected agents, allowlist the FQDNs from the [Integrate with Azure Firewall](https://learn.microsoft.com/en-us/azure/container-apps/use-azure-firewall#application-rules) article (under Managed Identity), or add the Service Tag `AzureActiveDirectory`.
+### Option C: Managed VNet (Outbound Isolation) — Preview
+
+**What it does:** Microsoft creates and manages a virtual network **for you**. Your agents run in this Microsoft-managed VNet. You don't provide a VNet or subnets — Microsoft handles it all.
+
+**Think of it like:** Option B is "bring your own house, we'll move in." Option C is "we'll build the house for you, you just tell us the rules."
+
+> ⚠️ **This is currently in Preview** — not recommended for production. If your enterprise doesn't allow preview features, use Option B instead.
+
+![Managed VNet Overview](images/diagram-managed-network.png)
+
+**Two isolation modes for the managed VNet:**
+
+**Allow Internet Outbound** — Agents can reach any internet destination. Useful for development where agents need to download packages or call external APIs. Azure still manages the VNet and can add private endpoints for Azure services.
+
+![Allow Internet Outbound](images/diagram-allow-internet-outbound.png)
+
+**Allow Only Approved Outbound** — Agents can ONLY reach destinations you explicitly approve. Everything else is blocked. You define allowed targets using service tags, FQDNs, or private endpoints. Microsoft creates a managed Azure Firewall automatically.
+
+![Allow Only Approved Outbound](images/diagram-allow-only-approved-outbound.png)
+
+**Managed VNet vs BYO VNet Injection — side by side:**
+
+| | Managed VNet (Option C) | BYO VNet Injection (Option B) |
+|---|---|---|
+| Who creates the VNet | Microsoft | You |
+| Your firewall | No — managed firewall auto-created | Yes — bring your own |
+| On-premises access | Via Application Gateway only | Native (agents are in your VNet) |
+| Evaluation compute security | Not supported | Supported |
+| MCP tools with network isolation | Not supported (public MCP only) | Supported (private MCP) |
+| Logging outbound traffic | Not supported | Supported (your firewall) |
+| Status | **Preview** | **GA** |
+| Deploy via | Bicep template only | Portal, Bicep, or Terraform |
+
+**Managed VNet limitations:**
+- Bicep-only deployment ([18-managed-virtual-network-preview](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/18-managed-virtual-network-preview))
+- Can't bring your own firewall
+- Can't switch back to no isolation once enabled
+- FQDN rules only support ports 80 and 443
+- Private endpoints to Cosmos DB and AI Search must be created manually via CLI
+- Each Foundry account gets its own managed firewall (can't share)
+- Preview regions only
+- Requires feature flag registration: `az feature register --namespace Microsoft.CognitiveServices --name AI.ManagedVnetPreview`
 
 ---
 
-## Agent Tools — What Works Behind a VNet?
+### Option D: Network Security Perimeter (NSP) — Preview
 
-Not all agent tools support network isolation yet. Here's the current status:
+**What it does:** NSP is a **policy-based security boundary** around multiple Azure PaaS resources. Instead of managing private endpoints one by one, you group resources into a perimeter and define inbound/outbound rules centrally.
 
-| Tool | Works in VNet? | How traffic flows |
-|------|---------------|-------------------|
+**Think of it like:** Options A/B/C are about building walls and doors. Option D is about drawing a circle around a group of resources and saying "nothing crosses this circle unless it's on the list."
+
+> ⚠️ **This is also in Preview.**
+
+![Network Security Perimeter](images/network-security-perimeter-diagram.png)
+
+**How it works:**
+1. Create a Network Security Perimeter in Azure
+2. Associate your Foundry resource (and other Azure resources like Storage, AI Search) with the perimeter
+3. Start in **Learning mode** — logs what would be blocked without actually blocking
+4. Define **inbound rules** (who can reach your resources — by IP range or subscription)
+5. Define **outbound rules** (what your resources can reach — by FQDN)
+6. Switch to **Enforced mode** — now the rules are active
+
+**Key concept:** Resources inside the same NSP **trust each other automatically** (when using managed identity). You only need rules for traffic crossing the perimeter boundary.
+
+**NSP vs Private Link:**
+
+| | Private Link (Option A) | NSP (Option D) |
+|---|---|---|
+| Approach | Network-level (private endpoints, private IPs) | Policy-level (rules, allow-lists) |
+| Controls | Inbound only | Inbound + Outbound (data-plane) |
+| Scope | One resource at a time | Multiple resources grouped together |
+| Private IPs | Yes — resources get private IPs in your VNet | No — works at the policy layer |
+| Status | **GA** | **Preview** |
+
+**NSP doesn't replace Private Link** — it's complementary. You might use Private Link for the network-level isolation and NSP for the policy-level governance on top.
+
+---
+
+## Part 4: How It All Fits Together — Decision Guide
+
+Here's the practical guide: **which options do you combine for your scenario?**
+
+### Scenario 1: "Just getting started, minimal security"
+- **Agent tier:** Basic
+- **Inbound:** Public access (default)
+- **Outbound:** N/A (Microsoft-managed compute)
+- **Options used:** None — just create an account and project
+
+### Scenario 2: "Production, data in my tenant, but no VNet needed"
+- **Agent tier:** Standard (BYO Storage, Cosmos DB, AI Search)
+- **Inbound:** Option A (Private Link) — disable public access, add private endpoint
+- **Outbound:** Default (Azure backbone)
+- **Options used:** A
+
+### Scenario 3: "Full enterprise lockdown"
+- **Agent tier:** Standard + BYO VNet
+- **Inbound:** Option A (Private Link) — disable public access
+- **Outbound:** Option B (BYO VNet Injection) — agents in your VNet, all private endpoints
+- **Firewall:** Hub-and-spoke with Azure Firewall for egress control
+- **Options used:** A + B
+
+### Scenario 4: "Enterprise lockdown, but don't want to manage a VNet"
+- **Agent tier:** Standard
+- **Inbound:** Option A (Private Link)
+- **Outbound:** Option C (Managed VNet) — Microsoft manages the VNet
+- **Options used:** A + C *(Preview)*
+
+### Scenario 5: "Multi-service policy governance"
+- **Agent tier:** Any
+- **Inbound:** Option D (NSP) — group Foundry + Storage + AI Search in a perimeter
+- **Outbound:** Option B or C
+- **Options used:** D + B or D + C *(NSP is Preview)*
+
+---
+
+## Part 5: Agent Setup Tiers — Quick Reference
+
+| Capability | Basic | Standard | Standard + BYO VNet |
+|-----------|-------|----------|---------------------|
+| Quick start, no resource management | ✅ | | |
+| Data in your own Azure resources | | ✅ | ✅ |
+| Customer Managed Keys (CMK) | | ✅ | ✅ |
+| Full network isolation (agents in your VNet) | | | ✅ |
+
+**Standard setup BYO resources:**
+
+| Your Resource | What it stores | Minimum requirements |
+|---------------|---------------|---------------------|
+| Azure Storage | Files uploaded by users/devs | Standard account |
+| Azure AI Search | Vector stores (embeddings) | Any tier |
+| Azure Cosmos DB for NoSQL | Conversations, agent metadata | 3000 RU/s minimum (1000 × 3 containers) |
+
+**Cosmos DB containers created automatically:**
+
+| Container | Data |
+|-----------|------|
+| `thread-message-store` | User conversations |
+| `system-thread-message-store` | Internal system messages |
+| `agent-entity-store` | Agent metadata (instructions, tools, name) |
+
+For N projects under one account, you need N × 3000 RU/s.
+
+---
+
+## Part 6: Agent Tools — Network Support Matrix
+
+Not all agent tools work behind a VNet. Here's the current status:
+
+| Tool | Works in VNet? | Traffic path |
+|------|---------------|-------------|
 | MCP Tool (Private MCP) | ✅ Yes | Through your VNet subnet |
 | Azure AI Search | ✅ Yes | Through private endpoint |
 | Code Interpreter | ✅ Yes | Microsoft backbone (no config needed) |
@@ -270,49 +373,48 @@ Not all agent tools support network isolation yet. Here's the current status:
 | Image Generation | ❌ No | Under investigation |
 | Agent-to-Agent (A2A) | ❌ No | Under development |
 
-> *Bing, Websearch, and SharePoint tools work but use the **public internet**. If your compliance requires all traffic to stay private, these tools won't meet that requirement. You can block them via Azure Policy.
+*Bing, Websearch, and SharePoint use the public internet even in VNet-isolated setups. Block via Azure Policy if needed.
 
 ---
 
-## Foundry Features — Network Isolation Support
+## Part 7: Feature Limitations with Network Isolation
 
-Some Foundry features don't yet support full network isolation:
-
-| Feature | Status | What to know |
-|---------|--------|-------------|
-| Hosted Agents | ❌ Not supported | No VNet support yet |
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Hosted Agents | ❌ Not supported | No VNet support |
 | Publish to Teams/M365 | ❌ Not supported | Requires public endpoints |
-| Synthetic Data for Evaluations | ❌ Not supported | Bring your own data instead |
-| Traces | ❌ Not supported | No private Application Insights support yet |
-| Workflow Agents | ⚠️ Partial | Inbound works (UI, SDK, CLI). Outbound VNet injection not supported yet |
-| AI Gateway | ⚠️ Partial | Gateway is auto-public. Needs its own network isolation config for data plane |
-| Agent Tools | ⚠️ Partial | See the tool-by-tool table above |
+| Synthetic Data for Evaluations | ❌ Not supported | Bring your own data |
+| Traces | ❌ Not supported | No private Application Insights support |
+| Workflow Agents | ⚠️ Partial | Inbound works. Outbound VNet injection not supported |
+| AI Gateway | ⚠️ Partial | Auto-public. Needs its own network isolation |
+| MCP tools + Managed VNet | ❌ Not supported | Use BYO VNet (Option B) for private MCP |
+| Evaluation compute + Managed VNet | ❌ Not supported | Use BYO VNet (Option B) |
 
 ---
 
-## Known Limitations
+## Part 8: Known Limitations
 
-- **RFC1918 only:** Subnets must use private IP ranges: `10.0.0.0/8`, `172.16.0.0/12`, or `192.168.0.0/16`
-- **One subnet per Foundry resource:** Each Foundry resource needs its own dedicated agent subnet
-- **Subnet size:** Minimum `/27` (32 IPs), recommended `/24` (256 IPs)
-- **Same region:** All resources (Cosmos DB, Storage, AI Search, Foundry, VNet) must be in the same Azure region
-- **Same subscription:** Private endpoints must be in the same subscription as the VNet
+- **RFC1918 only:** Subnets must use `10.0.0.0/8`, `172.16.0.0/12`, or `192.168.0.0/16`
 - **Avoid 172.17.0.0/16:** Reserved by Docker
-- **Capability hosts are immutable:** Once set, you can't update them — delete and recreate the project
-- **No TLS inspection:** Firewall TLS inspection can break agent traffic by injecting self-signed certs
-- **File Search + Blob Storage:** Not supported in network-isolated environments
+- **One agent subnet per Foundry resource** — can't share subnets
+- **Subnet size:** Minimum `/27` (32 IPs), recommended `/24` (256 IPs)
+- **Same region:** All resources (Cosmos DB, Storage, AI Search, Foundry, VNet) must be in the same region
+- **Same subscription:** Private endpoints must match the VNet subscription
+- **Capability hosts are immutable:** Can't update after creation — delete and recreate
+- **Managed VNet is one-way:** Once enabled, can't disable or switch modes
+- **File Search + Blob Storage:** Not supported behind VNet
 
 ---
 
-## Required RBAC Roles
+## Part 9: RBAC Roles Required
 
-| Who | Needs this role | On what scope |
-|-----|----------------|---------------|
+| Who | Needs this role | Scope |
+|-----|----------------|-------|
 | Admin creating the account | Azure AI Account Owner | Subscription |
-| Admin assigning resource permissions (Standard) | Role Based Access Administrator | Resource group |
+| Admin assigning BYO resource permissions | Role Based Access Administrator | Resource group |
 | Developers creating/editing agents | Azure AI User | Project |
 
-**The project's managed identity needs these roles on BYO resources:**
+**Project managed identity roles (Standard setup):**
 
 | Resource | Role |
 |----------|------|
@@ -325,9 +427,7 @@ Some Foundry features don't yet support full network isolation:
 
 ---
 
-## Required Resource Provider Registrations
-
-Register these before deploying:
+## Part 10: Resource Provider Registrations
 
 ```bash
 az provider register --namespace 'Microsoft.KeyVault'
@@ -342,56 +442,66 @@ az provider register --namespace 'Microsoft.ContainerService'
 az provider register --namespace 'Microsoft.Bing'
 ```
 
+For Managed VNet (Preview), also register the feature flag:
+```bash
+az feature register --namespace Microsoft.CognitiveServices --name AI.ManagedVnetPreview
+```
+
 ---
 
-## Troubleshooting
+## Part 11: Troubleshooting
 
 ### Deployment Errors
 
-| Error message | What's wrong | Fix |
-|--------------|-------------|-----|
-| `CapabilityHost supports a single, non empty value for storageConnections...` | Missing BYO resource connections | You must provide all three: Storage, Cosmos DB, and AI Search |
-| `Provided subnet must be of the proper address space` | Wrong IP range | Use RFC1918 ranges only (`10.x`, `172.16-31.x`, `192.168.x`) |
-| `Subscription is not registered with required resource providers` | Missing providers | Run the `az provider register` commands above |
-| `Failed async operation` / `Capability host operation failed` | Various | Create a support ticket. Check capability host details in portal |
-| `Subnet requires delegation to Microsoft.App/environments` | Stale resources | In portal: Foundry resource → **Manage deleted resources** → purge. Or run `deleteCaphost.sh` |
-| `Timeout of 60000ms` on Agent pages | Can't reach Cosmos DB | Check Cosmos DB private endpoint and DNS. If using firewall, allow required FQDNs |
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `CapabilityHost supports a single, non empty value for storageConnections...` | Missing BYO resource | Provide all three: Storage, Cosmos DB, AI Search |
+| `Provided subnet must be of the proper address space` | Wrong IP range | Use RFC1918 only |
+| `Subscription is not registered with required resource providers` | Missing registrations | Run `az provider register` commands above |
+| `Failed async operation` / `Capability host operation failed` | Various | Create support ticket. Check capability host |
+| `Subnet requires delegation to Microsoft.App/environments` | Stale resource | Purge via portal or run `deleteCaphost.sh` |
+| `Timeout of 60000ms` on Agent pages | Can't reach Cosmos DB | Check private endpoint + DNS for Cosmos DB |
 
-### DNS Problems
-
-| Symptom | Fix |
-|---------|-----|
-| `nslookup` returns a public IP | Private DNS zone not linked to VNet. Check zone → Virtual network links |
-| Custom DNS server can't resolve | Add conditional forwarder for `privatelink.*` domains to `168.63.129.16` |
-| Intermittent DNS failures | Check DNS server reachability from all subnets |
-
-### Connectivity Problems
+### DNS Issues
 
 | Symptom | Fix |
 |---------|-----|
-| Connection timeout on port 443 | Check NSG rules allow traffic to private endpoint IPs on 443 |
-| Can't reach Foundry from on-prem | Verify VPN/ExpressRoute is up. Check route tables include VNet address space |
-| 403 Forbidden | Usually RBAC, not networking. Verify role assignments on the project |
+| `nslookup` returns public IP | Link private DNS zone to your VNet |
+| Custom DNS can't resolve | Forward `privatelink.*` to Azure DNS (`168.63.129.16`) |
+| Intermittent resolution failures | Check DNS server reachability from all subnets |
 
-### Agent Problems
+### Connectivity Issues
 
 | Symptom | Fix |
 |---------|-----|
-| Agent won't start | Verify you're using Standard setup (not Basic). Check subnet has available IPs |
-| Agent can't access MCP tools | Check private endpoints exist for all services. Verify managed identity RBAC |
-| Evaluation runs fail | Verify all DNS zones are configured and linked |
-| Agent timeout on external APIs | Firewall may block outbound HTTPS. Allow the destination or add a NAT gateway |
+| Timeout on port 443 | Check NSG allows traffic to PE IP on 443 |
+| Can't reach from on-prem | Check VPN/ER is up + route tables include VNet range |
+| 403 Forbidden | Usually RBAC, not networking. Check role assignments |
+
+### Agent Issues
+
+| Symptom | Fix |
+|---------|-----|
+| Agent won't start | Use Standard setup (not Basic). Check subnet IPs available |
+| Agent can't access MCP tools | Check private endpoints + managed identity RBAC |
+| Evaluation fails with network errors | Check all DNS zones configured |
+| Agent timeout on external calls | Firewall may block HTTPS. Allow destination or add NAT gateway |
 
 ---
 
-## References
+## References — The Microsoft Docs Map
 
-- [Configure network isolation for Microsoft Foundry](https://learn.microsoft.com/en-us/azure/foundry/how-to/configure-private-link?view=foundry)
-- [Set up your environment for Foundry Agent Service](https://learn.microsoft.com/en-us/azure/foundry/agents/environment-setup)
-- [Set up standard agent resources](https://learn.microsoft.com/en-us/azure/foundry/agents/concepts/standard-agent-setup)
-- [Set up private networking for Foundry Agent Service](https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/virtual-networks)
-- [Foundry Samples on GitHub](https://github.com/microsoft-foundry/foundry-samples)
-- [Azure AI Agent Service FAQ — Virtual Networking](https://learn.microsoft.com/en-us/azure/foundry/agents/faq#virtual-networking)
+Here's where each doc fits (so you don't get lost again):
+
+| Doc | Covers | Options |
+|-----|--------|---------|
+| [Configure Private Link](https://learn.microsoft.com/en-us/azure/foundry/how-to/configure-private-link?view=foundry) | **Inbound** access + overall network planning | Option A |
+| [Virtual Networks for Agents](https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/virtual-networks) | **Outbound** — BYO VNet injection for Agent Service | Option B |
+| [Managed Virtual Network](https://learn.microsoft.com/en-us/azure/foundry/how-to/managed-virtual-network?view=foundry) | **Outbound** — Microsoft-managed VNet (Preview) | Option C |
+| [Network Security Perimeter](https://learn.microsoft.com/en-us/azure/foundry/how-to/add-foundry-to-network-security-perimeter?view=foundry) | **Policy-based** inbound + outbound (Preview) | Option D |
+| [Environment Setup](https://learn.microsoft.com/en-us/azure/foundry/agents/environment-setup) | Agent setup tiers (Basic / Standard / Standard+VNet) | Tier choice |
+| [Standard Agent Setup](https://learn.microsoft.com/en-us/azure/foundry/agents/concepts/standard-agent-setup) | BYO resources (Cosmos DB, Storage, AI Search) details | Standard tier |
+| [Foundry Samples](https://github.com/microsoft-foundry/foundry-samples) | Bicep + Terraform templates for all scenarios | All |
 
 ## License
 
