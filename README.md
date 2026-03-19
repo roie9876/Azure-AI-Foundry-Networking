@@ -1,32 +1,37 @@
-# Azure AI Foundry Blog
+# Microsoft Foundry Networking
 
-Welcome to the Azure AI Foundry Blog! This repository serves as a platform for sharing insights, updates, and detailed documentation regarding Azure AI Foundry and its various features.
+> **Updated March 2026** — Reflects the current Microsoft Foundry (formerly Azure AI Foundry) networking and security model.
 
-## Overview
+This repository contains resources and documentation for Microsoft Foundry networking and security at enterprise scale, covering the full network isolation model for Foundry Account, Projects, and Agent Service.
 
-The Azure AI Foundry Blog aims to provide comprehensive information about the Azure AI Foundry platform, including its networking capabilities, security features, and best practices for building and managing generative AI applications at scale.
+## What's Covered
 
-## Blog Posts
+- **Foundry Account & Projects** — The new resource hierarchy (replacing Hub + Projects)
+- **Agent Service Setup Tiers** — Basic, Standard, and Standard + BYO VNet configurations
+- **Inbound Network Isolation** — Private endpoints, PNA flag, DNS configuration
+- **Outbound Network Isolation** — VNet injection model with delegated agent subnets
+- **Agent Tool Network Support** — Which tools work behind a VNet and their traffic paths
+- **Hub-and-Spoke / Firewall** — Egress control with Azure Firewall
+- **Hybrid Connectivity** — On-premises access via VPN, ExpressRoute, or Bastion
+- **RBAC, DNS Zones, Troubleshooting** — Complete reference for enterprise deployments
 
-The blog contains various posts that delve into different aspects of Azure AI Foundry. Each post is structured to provide clear and concise information, making it easy for readers to understand the functionalities and configurations available within the platform.
+## Architecture Overview
 
-### Current Posts
+![Plan for Network Isolation](images/plan-network-isolation-diagram.png)
 
-- **Azure AI Foundry Networking**: This post covers the networking and security features of Azure AI Foundry, including the management of hubs and projects, networking isolation modes, and identity and access management.
+![VNet Injection Architecture](images/private-network-isolation.png)
 
-## Azure AI Foundry Networking
+For the full guide, see [azure-ai-foundry-networking.md](azure-ai-foundry-networking.md).
 
-This repository contains resources and documentation for Azure AI Foundry Networking.
+## Key References
 
-### Network Isolation Modes
-
-![Network Isolation Modes](images/NetworkIsolationModes.png)
-
-For more details, refer to the [azure-ai-foundry-networking.md](azure-ai-foundry-networking.md) file.
+- [Configure network isolation for Microsoft Foundry](https://learn.microsoft.com/en-us/azure/foundry/how-to/configure-private-link?view=foundry)
+- [Set up your environment for Foundry Agent Service](https://learn.microsoft.com/en-us/azure/foundry/agents/environment-setup)
+- [Set up standard agent resources](https://learn.microsoft.com/en-us/azure/foundry/agents/concepts/standard-agent-setup)
+- [Set up private networking for Foundry Agent Service](https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/virtual-networks)
+- [Foundry Samples on GitHub](https://github.com/microsoft-foundry/foundry-samples)
 
 ## How to Contribute
-
-We welcome contributions from the community! If you would like to contribute to the blog, please follow these steps:
 
 1. Fork the repository.
 2. Create a new branch for your feature or fix.
@@ -36,6 +41,4 @@ We welcome contributions from the community! If you would like to contribute to 
 
 ## License
 
-This project is licensed under the terms specified in the LICENSE file. Please review it for more information on how the content can be used or shared.
-
-Thank you for visiting the Azure AI Foundry Blog! We hope you find the information helpful and informative.
+This project is licensed under the terms specified in the LICENSE file.
