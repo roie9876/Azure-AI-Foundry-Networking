@@ -489,6 +489,94 @@ az feature register --namespace Microsoft.CognitiveServices --name AI.ManagedVne
 
 ---
 
+## Part 12: Which Bicep Template Should I Use?
+
+Microsoft provides **many** Bicep templates in [foundry-samples](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep) and it's hard to know which one fits your scenario. Here's the complete guide:
+
+### Template Decision Flowchart
+
+```
+Do you need network isolation?
+│
+├── No ──► Do you need your own data resources?
+│          │
+│          ├── No  ──► 40-basic-agent-setup
+│          │           (Fastest start. Microsoft-managed storage.)
+│          │
+│          └── Yes ──► 41-standard-agent-setup
+│                      (BYO Cosmos DB, Storage, AI Search. No VNet.)
+│
+└── Yes ──► Do you need ONLY inbound isolation (private portal access)?
+           │
+           ├── Yes ──► 10-private-network-basic
+           │           (Private endpoint for Foundry. No agent VNet.)
+           │
+           └── No ──► You need full outbound isolation too.
+                      │
+                      ├── Want Microsoft to manage the VNet?
+                      │   └── 18-managed-virtual-network-preview ⚠️ PREVIEW
+                      │
+                      ├── Want to manage your own VNet?
+                      │   │
+                      │   ├── System Managed Identity (default)
+                      │   │   └── 15-private-network-standard-agent-setup ✅ MOST COMMON
+                      │   │
+                      │   ├── User Assigned Identity
+                      │   │   └── 17-private-network-standard-user-assigned-identity-agent-setup
+                      │   │
+                      │   ├── Need API Management integration?
+                      │   │   └── 16-private-network-standard-agent-apim-setup-preview ⚠️ PREVIEW
+                      │   │
+                      │   └── Need MCP servers or on-prem data in the VNet?
+                      │       └── 19-hybrid-private-resources-agent-setup
+                      │
+                      └── (See also 30/31/32 templates if you need Customer Managed Keys)
+```
+
+### All Templates — Side by Side
+
+| # | Template | Agent Tier | Identity | Network | Special Feature | Status |
+|---|----------|-----------|----------|---------|----------------|--------|
+| **40** | [basic-agent-setup](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/40-basic-agent-setup) | Basic | SMI | Public | Fastest start | GA |
+| **42** | [basic-agent-setup-with-customization](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/42-basic-agent-setup-with-customization) | Basic | SMI | Public | BYO OpenAI + App Insights | GA |
+| **45** | [basic-agent-bing](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/45-basic-agent-bing) | Basic | SMI | Public | Bing grounding pre-configured | GA |
+| **41** | [standard-agent-setup](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/41-standard-agent-setup) | Standard | SMI | Public | BYO resources (Cosmos, Storage, Search) | GA |
+| **43** | [standard-agent-setup-with-customization](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/43-standard-agent-setup-with-customization) | Standard | SMI | Public | BYO resources + BYO OpenAI | GA |
+| **10** | [private-network-basic](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/10-private-network-basic) | — | SMI | **Private inbound** | PE for Foundry only (no agent VNet) | GA |
+| **15** | [private-network-standard-agent-setup](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/15-private-network-standard-agent-setup) | Standard | SMI | **Full E2E** | BYO VNet + all private endpoints | **GA** |
+| **16** | [private-network-standard-agent-apim-setup](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/16-private-network-standard-agent-apim-setup-preview) | Standard | SMI | **Full E2E** | + Azure API Management integration | **Preview** |
+| **17** | [private-network-standard-UAI-agent-setup](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/17-private-network-standard-user-assigned-identity-agent-setup) | Standard | **UAI** | **Full E2E** | User Assigned Identity instead of SMI | GA |
+| **18** | [managed-virtual-network-preview](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/18-managed-virtual-network-preview) | Standard | SMI | **Managed VNet** | Microsoft manages the VNet for you | **Preview** |
+| **19** | [hybrid-private-resources-agent-setup](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/19-hybrid-private-resources-agent-setup) | Standard | SMI | **Full E2E** | + MCP servers + on-prem data + 3 subnets | GA |
+| **30** | [customer-managed-keys](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/30-customer-managed-keys) | — | SMI | — | CMK encryption | GA |
+| **31** | [CMK-standard-agent](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/31-customer-managed-keys-standard-agent) | Standard | SMI | — | CMK + Standard agent | GA |
+| **32** | [CMK-UAI](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/32-customer-managed-keys-user-assigned-identity) | — | UAI | — | CMK + User Assigned Identity | GA |
+
+**Legend:** SMI = System Managed Identity, UAI = User Assigned Identity, PE = Private Endpoint, E2E = End-to-end network isolation
+
+### What's the Difference Between 15, 16, 17, and 19?
+
+These four templates are all "full E2E network isolation" but with different extras:
+
+| Template | Base | + What's Added |
+|----------|------|---------------|
+| **15** | Standard + BYO VNet + all PEs | **The baseline.** Start here if you just need full network isolation. |
+| **16** | Same as 15 | + **Azure API Management** private endpoint. Use when agents need to call APIs through APIM. Preview. |
+| **17** | Same as 15 | + **User Assigned Identity** instead of System Managed Identity. Use when you need to pre-create and share the identity across resources, or when your org requires UAI. |
+| **19** | Same as 15 | + **Third subnet for MCP servers** + on-prem data access. Use when agents need to reach private MCP tools or hybrid data sources. Also supports toggling public/private access. |
+
+### My Recommendation
+
+For most enterprise deployments:
+
+1. **Starting out?** Use **40** (basic) or **41** (standard) — no networking complexity
+2. **Need private portal access only?** Use **10** — adds a private endpoint, nothing else
+3. **Full enterprise lockdown?** Use **15** — this is the "production standard" template
+4. **Need private MCP or on-prem data?** Use **19** — extends 15 with hybrid connectivity
+5. **Don't want to manage a VNet?** Use **18** — but it's Preview, with limitations
+
+---
+
 ## References — The Microsoft Docs Map
 
 Here's where each doc fits (so you don't get lost again):
