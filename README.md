@@ -292,31 +292,44 @@ Here's the practical guide: **which options do you combine for your scenario?**
 - **Inbound:** Public access (default)
 - **Outbound:** N/A (Microsoft-managed compute)
 - **Options used:** None — just create an account and project
+- **Template:** [40-basic-agent-setup](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/40-basic-agent-setup)
 
 ### Scenario 2: "Production, data in my tenant, but no VNet needed"
 - **Agent tier:** Standard (BYO Storage, Cosmos DB, AI Search)
 - **Inbound:** Option A (Private Link) — disable public access, add private endpoint
 - **Outbound:** Default (Azure backbone)
 - **Options used:** A
+- **Template:** [41-standard-agent-setup](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/41-standard-agent-setup) + manually add PE, or [10-private-network-basic](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/10-private-network-basic)
+
+> ⚠️ **What's NOT private here:** The Foundry portal/API gets a private IP (your users connect privately), but the **Agent Service compute still runs on Microsoft's infrastructure**. It talks to your BYO resources (Storage, Cosmos DB, AI Search) over the **Azure backbone using their public endpoints** — encrypted, but not over private IPs. Your BYO resources still have public endpoints unless you manually lock them down. If you need the agent compute itself to be in your VNet with private IPs to all resources, go to **Scenario 3**.
 
 ### Scenario 3: "Full enterprise lockdown"
 - **Agent tier:** Standard + BYO VNet
 - **Inbound:** Option A (Private Link) — disable public access
-- **Outbound:** Option B (BYO VNet Injection) — agents in your VNet, all private endpoints
+- **Outbound:** Option B (BYO VNet Injection) — agents in your VNet, all private endpoints, all resources have public access disabled
 - **Firewall:** Hub-and-spoke with Azure Firewall for egress control
 - **Options used:** A + B
+- **Template:** [15-private-network-standard-agent-setup](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/15-private-network-standard-agent-setup)
+
+> ✅ **Everything is private here:** Foundry portal (private endpoint), Agent compute (injected into your VNet subnet), and ALL BYO resources (private endpoints, public access disabled). This is the only scenario where the agent compute itself has a private IP in your network.
 
 ### Scenario 4: "Enterprise lockdown, but don't want to manage a VNet"
 - **Agent tier:** Standard
 - **Inbound:** Option A (Private Link)
 - **Outbound:** Option C (Managed VNet) — Microsoft manages the VNet
 - **Options used:** A + C *(Preview)*
+- **Template:** [18-managed-virtual-network-preview](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/18-managed-virtual-network-preview)
 
-### Scenario 5: "Multi-service policy governance"
-- **Agent tier:** Any
-- **Inbound:** Option D (NSP) — group Foundry + Storage + AI Search in a perimeter
-- **Outbound:** Option B or C
-- **Options used:** D + B or D + C *(NSP is Preview)*
+> ⚠️ **Preview.** Agent compute runs in a Microsoft-managed VNet (not your VNet). You don't see or manage the network — Microsoft handles it. Some limitations: no private MCP, no evaluation compute isolation, no custom firewall.
+
+### Scenario 5: "Full lockdown + private MCP servers or on-prem data"
+- **Agent tier:** Standard + BYO VNet
+- **Inbound:** Option A (Private Link)
+- **Outbound:** Option B (BYO VNet Injection) + MCP subnet
+- **Options used:** A + B
+- **Template:** [19-hybrid-private-resources-agent-setup](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/19-hybrid-private-resources-agent-setup)
+
+> Uses 3 subnets: agent subnet, PE subnet, and an MCP subnet for hosting private MCP servers accessible by the agent.
 
 ---
 
