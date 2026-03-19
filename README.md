@@ -342,7 +342,25 @@ Here's the practical guide: **which options do you combine for your scenario?**
 
 ---
 
-## Part 5: Agent Setup Tiers — Quick Reference
+## Part 5: Agent Setup Tiers — When Do You Provide Resources?
+
+This is a critical question: **when do YOU need to create and manage Azure resources for the Agent Service, and when does Microsoft handle it?**
+
+| | Basic | Standard | Standard + BYO VNet |
+|---|---|---|---|
+| **Cosmos DB** | ❌ Microsoft manages it | ✅ **You provide it** | ✅ **You provide it** |
+| **Azure Storage** | ❌ Microsoft manages it | ✅ **You provide it** | ✅ **You provide it** |
+| **Azure AI Search** | ❌ Microsoft manages it | ✅ **You provide it** | ✅ **You provide it** |
+| **Virtual Network** | ❌ Not needed | ❌ Not needed | ✅ **You provide it** |
+| **Where is agent data stored?** | Microsoft's multitenant storage (you can't see it) | In YOUR Azure resources (your tenant) | In YOUR Azure resources (your tenant) |
+| **Who pays for data resources?** | Included | You pay for Cosmos DB, Storage, AI Search | You pay for Cosmos DB, Storage, AI Search |
+
+**In plain terms:**
+- **Basic** = You bring NOTHING. Microsoft stores your agent conversations, files, and search indexes in their own infrastructure. Fast to start, but you don't control where data lives.
+- **Standard** = You bring **3 resources**: Azure Storage + Azure Cosmos DB + Azure AI Search. All agent data is stored in YOUR Azure subscription. You control it, you see it, you pay for it.
+- **Standard + BYO VNet** = Same as Standard, PLUS you also bring a **Virtual Network** with subnets. The agent compute runs inside your network.
+
+### Quick Reference
 
 | Capability | Basic | Standard | Standard + BYO VNet |
 |-----------|-------|----------|---------------------|
