@@ -680,6 +680,165 @@ Here's where each doc fits (so you don't get lost again):
 | [Capability Hosts](https://learn.microsoft.com/en-us/azure/foundry/agents/concepts/capability-hosts?view=foundry-classic) | The underlying compute infrastructure that runs your AI Agent | Architecture |
 | [Foundry Samples](https://github.com/microsoft-foundry/foundry-samples) | Bicep + Terraform templates for all scenarios | All |
 
+---
+
+## Part 8: Hands-On — Deploying Template 15 in a Hub-Spoke Network
+
+This section walks through a real deployment of **Template 15** (private network standard agent setup) into an existing hub-spoke topology with Azure Firewall.
+
+### The Scenario
+
+We have an existing hub-spoke network and want to deploy a fully private AI Foundry agent:
+
+- **Hub VNet** (`10.0.0.0/16`) — Azure Firewall at `10.0.0.4`, DNS proxy enabled
+- **Spoke VNet** (`foundry-vnet`, `10.100.0.0/16`) — peered to hub, with UDR routing `0.0.0.0/0` → Firewall
+- **Azure Bastion** + test VM for private access
+- **Goal**: Deploy AI Foundry Agent Service with all PaaS endpoints private, integrated with existing network
+
+### Architecture Diagram
+
+![Hub-Spoke Foundry Private Network](hub-spoke-foundry-private.drawio.png)
+
+```
+┌─────────────────────┐      VNet Peering      ┌────────────────────────────────────────┐
+│  Hub VNet           │◄──────────────────────►│  Spoke VNet (foundry-vnet)              │
+│  10.0.0.0/16        │                        │  10.100.0.0/16                          │
+│                     │                        │                                          │
+│  ┌───────────────┐  │                        │  ┌────────────┐  ┌───────────────────┐  │
+│  │ Azure Firewall│  │                        │  │ Bastion    │  │ test-vm subnet    │  │
+│  │ 10.0.0.4      │  │                        │  │ .1.0/26    │  │ .2.0/24           │  │
+│  └───────────────┘  │                        │  └────────────┘  └───────────────────┘  │
+│                     │                        │                                          │
+│  UDR: 0/0 → FW     │                        │  ┌────────────────────────────────────┐  │
+└─────────────────────┘                        │  │ agent-subnet  .3.0/24             │  │
+         │                                     │  │ delegated: Microsoft.App/envs      │  │
+         ▼                                     │  │ (AI Agent Service compute)         │  │
+    ┌─────────┐                                │  └────────────────────────────────────┘  │
+    │ Internet│                                │                                          │
+    └─────────┘                                │  ┌────────────────────────────────────┐  │
+                                               │  │ pe-subnet  .4.0/24                │  │
+                                               │  │ PEs: Foundry, Search, Storage,    │  │
+                                               │  │      Cosmos DB, Blob, File        │  │
+                                               │  └────────────────────────────────────┘  │
+                                               └────────────────────────────────────────┘
+```
+
+### Step 1: Create Private DNS Zones
+
+Before deploying, create all 7 private DNS zones and link them to the spoke VNet:
+
+```bash
+RG="foundry-private"
+SUB="<your-subscription-id>"
+VNET_ID="/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.Network/virtualNetworks/foundry-vnet"
+
+ZONES=(
+  "privatelink.cognitiveservices.azure.com"
+  "privatelink.openai.azure.com"
+  "privatelink.services.ai.azure.com"
+  "privatelink.search.windows.net"
+  "privatelink.documents.azure.com"
+  "privatelink.blob.core.windows.net"
+  "privatelink.file.core.windows.net"
+)
+
+for zone in "${ZONES[@]}"; do
+  az network private-dns zone create -g $RG -n "$zone"
+  az network private-dns link vnet create -g $RG -n "${zone}-link" \
+    --zone-name "$zone" --virtual-network "$VNET_ID" --registration-enabled false
+done
+```
+
+### Step 2: Register Resource Providers
+
+The agent subnet delegation requires `Microsoft.App` and `Microsoft.ContainerService`:
+
+```bash
+az provider register --namespace Microsoft.App
+az provider register --namespace Microsoft.ContainerService
+```
+
+Wait for both to show `Registered`:
+
+```bash
+az provider show -n Microsoft.App --query registrationState -o tsv
+az provider show -n Microsoft.ContainerService --query registrationState -o tsv
+```
+
+### Step 3: Deploy via Azure Portal
+
+Click **"Deploy to Azure"** from the [Template 15 README](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/15-private-network-standard-agent-setup).
+
+Fill in the parameters — here's what the form looks like with BYO VNet values:
+
+![Deployment Parameters](bicp-scresnshots.jpeg)
+
+Key parameters for BYO VNet:
+
+| Parameter | Value |
+|-----------|-------|
+| **Vnet Name** | `foundry-vnet` |
+| **Agent Subnet Name / Prefix** | `agent-subnet` / `10.100.3.0/24` |
+| **Pe Subnet Name / Prefix** | `pe-subnet` / `10.100.4.0/24` |
+| **Existing Vnet Resource Id** | Full resource ID of your spoke VNet |
+| **Vnet Address Prefix** | `10.100.0.0/16` |
+| **Dns Zones Subscription Id** | Your subscription ID |
+| **Existing Dns Zones** | JSON mapping zone names → full resource IDs |
+| **Ai Search / Storage / Cosmos** | Leave empty (template creates new ones) |
+
+### Step 4: Troubleshooting
+
+**"Subscription not registered with Microsoft.App"** — Register the providers (Step 2 above).
+
+**"AccountIsNotSucceeded — Current state: Failed"** — A previous failed deployment left the AI Services account in a broken state. Delete and purge it:
+
+```bash
+az cognitiveservices account delete --name <account-name> -g foundry-private
+az cognitiveservices account purge --name <account-name> -g foundry-private --location swedencentral
+```
+
+Then redeploy — ARM is incremental, so it will skip already-created resources and only recreate what failed.
+
+### Step 5: Attach UDR to New Subnets
+
+After deployment, attach your existing UDR to the new subnets so traffic routes through Azure Firewall:
+
+```bash
+az network vnet subnet update -g foundry-private --vnet-name foundry-vnet \
+  --name agent-subnet --route-table udr-foundry-private
+
+az network vnet subnet update -g foundry-private --vnet-name foundry-vnet \
+  --name pe-subnet --route-table udr-foundry-private
+```
+
+### Step 6: Verify from Test VM
+
+Connect to `foundry-vm` via Bastion and verify DNS resolves to private IPs:
+
+```bash
+nslookup <ai-services-name>.cognitiveservices.azure.com
+# Should resolve to 10.100.4.x (pe-subnet)
+
+nslookup <storage-name>.blob.core.windows.net
+# Should resolve to 10.100.4.x
+
+nslookup <cosmos-name>.documents.azure.com
+# Should resolve to 10.100.4.x
+```
+
+### What Template 15 Creates
+
+| Resource | Purpose | Public Access |
+|----------|---------|---------------|
+| AI Foundry (Cognitive Services) | Orchestration + model hosting (GPT-4.1) | **Disabled** |
+| Azure AI Search | Vector store for agent knowledge | **Disabled** |
+| Azure Storage (Blob + Files) | File storage for agent configs/uploads | **Disabled** |
+| Azure Cosmos DB (NoSQL) | Thread/conversation storage | **Disabled** |
+| Private Endpoints (6) | Secure connectivity to all PaaS services | N/A |
+| Subnet delegation | `agent-subnet` delegated to `Microsoft.App/environments` | N/A |
+
+---
+
 ## License
 
 This project is licensed under the terms specified in the LICENSE file.
