@@ -160,21 +160,23 @@ Fill in the parameters:
 | **Pe Subnet Prefix** | `10.100.4.0/24` |
 | **Ai Search / Storage / Cosmos** | _(leave empty — template creates new ones)_ |
 | **Dns Zones Subscription Id** | Your subscription ID |
-| **Existing Dns Zones** | JSON with zone names → resource IDs (see below) |
+| **Existing Dns Zones** | JSON with zone names → **resource group name** (see below) |
 | **Project Cap Host** | `caphostproj` |
 
-**Existing DNS Zones value** (JSON — map zone names to full resource IDs):
+**Existing DNS Zones value** (JSON — map zone names to the **resource group name** where each zone lives, NOT full resource IDs):
 ```json
 {
-  "privatelink.services.ai.azure.com": "/subscriptions/<sub-id>/resourceGroups/foundry-private/providers/Microsoft.Network/privateDnsZones/privatelink.services.ai.azure.com",
-  "privatelink.openai.azure.com": "/subscriptions/<sub-id>/resourceGroups/foundry-private/providers/Microsoft.Network/privateDnsZones/privatelink.openai.azure.com",
-  "privatelink.cognitiveservices.azure.com": "/subscriptions/<sub-id>/resourceGroups/foundry-private/providers/Microsoft.Network/privateDnsZones/privatelink.cognitiveservices.azure.com",
-  "privatelink.search.windows.net": "/subscriptions/<sub-id>/resourceGroups/foundry-private/providers/Microsoft.Network/privateDnsZones/privatelink.search.windows.net",
-  "privatelink.documents.azure.com": "/subscriptions/<sub-id>/resourceGroups/foundry-private/providers/Microsoft.Network/privateDnsZones/privatelink.documents.azure.com",
-  "privatelink.blob.core.windows.net": "/subscriptions/<sub-id>/resourceGroups/foundry-private/providers/Microsoft.Network/privateDnsZones/privatelink.blob.core.windows.net",
-  "privatelink.file.core.windows.net": "/subscriptions/<sub-id>/resourceGroups/foundry-private/providers/Microsoft.Network/privateDnsZones/privatelink.file.core.windows.net"
+  "privatelink.services.ai.azure.com": "foundry-private",
+  "privatelink.openai.azure.com": "foundry-private",
+  "privatelink.cognitiveservices.azure.com": "foundry-private",
+  "privatelink.search.windows.net": "foundry-private",
+  "privatelink.documents.azure.com": "foundry-private",
+  "privatelink.blob.core.windows.net": "foundry-private",
+  "privatelink.file.core.windows.net": "foundry-private"
 }
 ```
+
+> Leave a zone value empty (`""`) to let the template create a new zone for that service.
 
 ### Step 3: Troubleshooting Common Deployment Errors
 

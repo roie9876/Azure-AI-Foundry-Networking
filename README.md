@@ -783,8 +783,22 @@ Key parameters for BYO VNet:
 | **Existing Vnet Resource Id** | Full resource ID of your spoke VNet |
 | **Vnet Address Prefix** | `10.100.0.0/16` |
 | **Dns Zones Subscription Id** | Your subscription ID |
-| **Existing Dns Zones** | JSON mapping zone names → full resource IDs |
+| **Existing Dns Zones** | JSON mapping zone names → **resource group name** (not full resource ID!) |
 | **Ai Search / Storage / Cosmos** | Leave empty (template creates new ones) |
+
+> **Important:** The `existingDnsZones` parameter expects the **resource group name** where each DNS zone lives, NOT the full resource ID. For example:
+> ```json
+> {
+>   "privatelink.services.ai.azure.com": "foundry-private",
+>   "privatelink.openai.azure.com": "foundry-private",
+>   "privatelink.cognitiveservices.azure.com": "foundry-private",
+>   "privatelink.search.windows.net": "foundry-private",
+>   "privatelink.documents.azure.com": "foundry-private",
+>   "privatelink.blob.core.windows.net": "foundry-private",
+>   "privatelink.file.core.windows.net": "foundry-private"
+> }
+> ```
+> Leave a zone value empty (`""`) to let the template create a new zone for that service.
 
 ### Step 4: Troubleshooting
 
@@ -825,6 +839,128 @@ nslookup <storage-name>.blob.core.windows.net
 nslookup <cosmos-name>.documents.azure.com
 # Should resolve to 10.100.4.x
 ```
+
+### Step 7: Configure RBAC for Knowledge Source (Blob → AI Search → AI Foundry)
+
+Template 15 creates the resources with managed identities, but it does **not** assign all the cross-service RBAC roles needed for knowledge source scenarios (e.g., connecting Azure Blob Storage as a knowledge source in AI Foundry). You must configure these manually.
+
+#### Identify Managed Identity Principal IDs
+
+```bash
+RG="foundry-private"
+
+# AI Services (hub account) managed identity
+AI_MI=$(az cognitiveservices account show --name <ai-services-name> -g $RG \
+  --query identity.principalId -o tsv)
+
+# Foundry Project managed identity
+PROJ_MI=$(az cognitiveservices account show --name <ai-services-name> -g $RG \
+  --query "properties.capabilities[?name=='projectPrincipalId'].value" -o tsv 2>/dev/null)
+# If the above doesn't work, get it from the portal or resource JSON:
+# PROJ_MI=$(az resource show --ids "<ai-services-id>/projects/<project-name>" --query identity.principalId -o tsv)
+
+# AI Search managed identity
+SEARCH_MI=$(az search service show --name <search-name> -g $RG \
+  --query identity.principalId -o tsv)
+
+echo "AI Services MI: $AI_MI"
+echo "Project MI:     $PROJ_MI"
+echo "AI Search MI:   $SEARCH_MI"
+```
+
+#### Assign RBAC Roles
+
+The following roles enable AI Foundry's project to index blob data via AI Search and serve it as a knowledge source:
+
+```bash
+RG="foundry-private"
+STORAGE_ID=$(az storage account show --name <storage-name> -g $RG --query id -o tsv)
+SEARCH_ID=$(az search service show --name <search-name> -g $RG --query id -o tsv)
+AI_ID=$(az cognitiveservices account show --name <ai-services-name> -g $RG --query id -o tsv)
+
+# --- AI Services → Storage ---
+az role assignment create --assignee-object-id "$AI_MI" \
+  --assignee-principal-type ServicePrincipal \
+  --role "Storage Blob Data Contributor" --scope "$STORAGE_ID"
+
+# --- Project → Storage ---
+az role assignment create --assignee-object-id "$PROJ_MI" \
+  --assignee-principal-type ServicePrincipal \
+  --role "Storage Blob Data Contributor" --scope "$STORAGE_ID"
+
+# --- AI Services → AI Search ---
+az role assignment create --assignee-object-id "$AI_MI" \
+  --assignee-principal-type ServicePrincipal \
+  --role "Search Index Data Contributor" --scope "$SEARCH_ID"
+
+az role assignment create --assignee-object-id "$AI_MI" \
+  --assignee-principal-type ServicePrincipal \
+  --role "Search Service Contributor" --scope "$SEARCH_ID"
+
+# --- Project → AI Search ---
+az role assignment create --assignee-object-id "$PROJ_MI" \
+  --assignee-principal-type ServicePrincipal \
+  --role "Search Index Data Contributor" --scope "$SEARCH_ID"
+
+az role assignment create --assignee-object-id "$PROJ_MI" \
+  --assignee-principal-type ServicePrincipal \
+  --role "Search Service Contributor" --scope "$SEARCH_ID"
+
+# --- AI Search → Storage (indexer reads blobs) ---
+az role assignment create --assignee-object-id "$SEARCH_MI" \
+  --assignee-principal-type ServicePrincipal \
+  --role "Storage Blob Data Reader" --scope "$STORAGE_ID"
+
+# --- AI Search → AI Services (vectorization / embeddings) ---
+az role assignment create --assignee-object-id "$SEARCH_MI" \
+  --assignee-principal-type ServicePrincipal \
+  --role "Cognitive Services OpenAI Contributor" --scope "$AI_ID"
+```
+
+#### RBAC Summary
+
+| # | Assignee (Managed Identity) | Target Resource | Role | Purpose |
+|---|---------------------------|-----------------|------|---------|
+| 1 | AI Services | Storage Account | Storage Blob Data Contributor | Read/write blob data |
+| 2 | Foundry Project | Storage Account | Storage Blob Data Contributor | Read/write blob data |
+| 3 | AI Services | AI Search | Search Index Data Contributor | Create/manage indexes |
+| 4 | AI Services | AI Search | Search Service Contributor | Manage search service |
+| 5 | Foundry Project | AI Search | Search Index Data Contributor | Create/manage indexes |
+| 6 | Foundry Project | AI Search | Search Service Contributor | Manage search service |
+| 7 | AI Search | Storage Account | Storage Blob Data Reader | Index blob content |
+| 8 | AI Search | AI Services | Cognitive Services OpenAI Contributor | Generate embeddings for vectorization |
+
+#### Create Shared Private Link (AI Search → Storage)
+
+In a fully private setup, AI Search cannot reach the storage account over the public internet. You must create a **Shared Private Link** so AI Search can connect to blob storage through a managed private endpoint:
+
+```bash
+STORAGE_ID=$(az storage account show --name <storage-name> -g $RG --query id -o tsv)
+
+az search shared-private-link-resource create \
+  --name "spl-blob-storage" \
+  --service-name <search-name> \
+  --resource-group $RG \
+  --group-id "blob" \
+  --resource-id "$STORAGE_ID" \
+  --request-message "AI Search indexer access to blob storage"
+```
+
+After creation, **approve** the pending private endpoint connection on the storage account:
+
+```bash
+# Find the pending connection
+PE_CONN=$(az storage account show --name <storage-name> -g $RG \
+  --query "privateEndpointConnections[?properties.privateLinkServiceConnectionState.status=='Pending'].name" -o tsv)
+
+# Approve it
+az storage account private-endpoint-connection approve \
+  --account-name <storage-name> -g $RG \
+  --name "$PE_CONN" --description "Approved for AI Search indexer"
+```
+
+> **Without the Shared Private Link**, creating a knowledge source in the Foundry portal will fail with:
+> *"Failed to create knowledge source. An error occurred while processing your request."*
 
 ### What Template 15 Creates
 

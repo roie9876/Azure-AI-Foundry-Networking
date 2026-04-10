@@ -1,195 +1,147 @@
-<mxfile host="app.diagrams.net" modified="2026-04-09" agent="Copilot" version="24.0.0" type="device">
+<mxfile host="Electron" agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/24.7.17 Chrome/128.0.6613.36 Electron/32.0.1 Safari/537.36" version="24.7.17">
   <diagram name="Hub-Spoke Foundry Private Network" id="hub-spoke-foundry-v2">
-    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1700" pageHeight="1100" math="0" shadow="0">
+    <mxGraphModel dx="1354" dy="789" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1700" pageHeight="1100" math="0" shadow="0">
       <root>
-        <mxCell id="0"/>
-        <mxCell id="1" parent="0"/>
-
-        <!-- ===== ON-PREMISES ===== -->
-        <mxCell id="onprem" value="On premises&#xa;network" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000066;fontSize=12;fontStyle=1;align=center;strokeWidth=2;" vertex="1" parent="1">
-          <mxGeometry x="20" y="120" width="130" height="60" as="geometry"/>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="onprem" value="On premises&#xa;network" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000066;fontSize=12;fontStyle=1;align=center;strokeWidth=2;" parent="1" vertex="1">
+          <mxGeometry x="20" y="120" width="130" height="60" as="geometry" />
         </mxCell>
-
-        <!-- ===== INTERNET ===== -->
-        <mxCell id="internet" value="Internet" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000066;fontSize=12;fontStyle=1;align=center;strokeWidth=2;" vertex="1" parent="1">
-          <mxGeometry x="20" y="310" width="130" height="60" as="geometry"/>
+        <mxCell id="internet" value="Internet" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000066;fontSize=12;fontStyle=1;align=center;strokeWidth=2;" parent="1" vertex="1">
+          <mxGeometry x="20" y="310" width="130" height="60" as="geometry" />
         </mxCell>
-
-        <!-- Inbound arrow -->
-        <mxCell id="inbound-edge" value="Inbound" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=2;strokeColor=#000000;fontStyle=1;fontSize=11;" edge="1" source="onprem" target="hub-vnet" parent="1">
-          <mxGeometry relative="1" as="geometry"/>
+        <mxCell id="inbound-edge" value="Inbound" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=2;strokeColor=#000000;fontStyle=1;fontSize=11;" parent="1" source="onprem" target="hub-vnet" edge="1">
+          <mxGeometry relative="1" as="geometry" />
         </mxCell>
-
-        <!-- Outbound arrow -->
-        <mxCell id="outbound-edge" value="Outbound" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=2;strokeColor=#000000;fontStyle=1;fontSize=11;" edge="1" source="hub-vnet" target="internet" parent="1">
-          <mxGeometry relative="1" as="geometry"/>
+        <mxCell id="outbound-edge" value="Outbound" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=2;strokeColor=#000000;fontStyle=1;fontSize=11;" parent="1" source="hub-vnet" target="internet" edge="1">
+          <mxGeometry relative="1" as="geometry" />
         </mxCell>
-
-        <!-- ===== HUB AZURE VNET ===== -->
-        <mxCell id="hub-vnet" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#CED8F6;strokeColor=#3366CC;verticalAlign=top;fontSize=13;fontStyle=1;align=center;strokeWidth=2;dashed=1;dashPattern=8 8;" vertex="1" parent="1">
-          <mxGeometry x="220" y="80" width="340" height="280" as="geometry"/>
+        <mxCell id="hub-vnet" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#CED8F6;strokeColor=#3366CC;verticalAlign=top;fontSize=13;fontStyle=1;align=center;strokeWidth=2;dashed=1;dashPattern=8 8;" parent="1" vertex="1">
+          <mxGeometry x="220" y="80" width="340" height="280" as="geometry" />
         </mxCell>
-
-        <!-- Hub VNet label with icon -->
-        <mxCell id="hub-label" value="Your Hub Azure VNET" style="text;html=1;fontSize=14;fontStyle=1;align=left;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#000066;" vertex="1" parent="1">
-          <mxGeometry x="270" y="90" width="250" height="30" as="geometry"/>
+        <mxCell id="hub-label" value="Your Hub Azure VNET" style="text;html=1;fontSize=14;fontStyle=1;align=left;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#000066;" parent="1" vertex="1">
+          <mxGeometry x="270" y="90" width="250" height="30" as="geometry" />
         </mxCell>
-
-        <mxCell id="hub-vnet-icon" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/networking/Virtual_Networks.svg;" vertex="1" parent="1">
-          <mxGeometry x="232" y="88" width="32" height="32" as="geometry"/>
+        <mxCell id="hub-vnet-icon" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/networking/Virtual_Networks.svg;" parent="1" vertex="1">
+          <mxGeometry x="232" y="88" width="32" height="32" as="geometry" />
         </mxCell>
-
-        <!-- Firewall icon in hub -->
-        <mxCell id="firewall" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/networking/Firewalls.svg;" vertex="1" parent="1">
-          <mxGeometry x="345" y="145" width="60" height="60" as="geometry"/>
+        <mxCell id="firewall" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/networking/Firewalls.svg;" parent="1" vertex="1">
+          <mxGeometry x="345" y="145" width="60" height="60" as="geometry" />
         </mxCell>
-
-        <mxCell id="fw-text" value="You can configure a&#xa;&lt;b&gt;firewall&lt;/b&gt; to control Agent&#xa;outbound traffic (optional)." style="text;html=1;fontSize=11;align=center;verticalAlign=top;fillColor=none;strokeColor=none;fontColor=#333333;" vertex="1" parent="1">
-          <mxGeometry x="290" y="215" width="210" height="60" as="geometry"/>
+        <mxCell id="fw-text" value="You can configure a&#xa;&lt;b&gt;firewall&lt;/b&gt; to control Agent&#xa;outbound traffic (optional)." style="text;html=1;fontSize=11;align=center;verticalAlign=top;fillColor=none;strokeColor=none;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="290" y="215" width="210" height="60" as="geometry" />
         </mxCell>
-
-        <!-- ===== DNS AZURE VNET ===== -->
-        <mxCell id="dns-vnet" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#CED8F6;strokeColor=#3366CC;verticalAlign=top;fontSize=13;fontStyle=1;align=center;strokeWidth=2;dashed=1;dashPattern=8 8;" vertex="1" parent="1">
-          <mxGeometry x="220" y="470" width="340" height="250" as="geometry"/>
+        <mxCell id="dns-vnet" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#CED8F6;strokeColor=#3366CC;verticalAlign=top;fontSize=13;fontStyle=1;align=center;strokeWidth=2;dashed=1;dashPattern=8 8;" parent="1" vertex="1">
+          <mxGeometry x="220" y="470" width="340" height="250" as="geometry" />
         </mxCell>
-
-        <mxCell id="dns-label" value="Your DNS Azure VNET" style="text;html=1;fontSize=14;fontStyle=1;align=left;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#000066;" vertex="1" parent="1">
-          <mxGeometry x="270" y="480" width="250" height="30" as="geometry"/>
+        <mxCell id="dns-label" value="Your DNS Azure VNET" style="text;html=1;fontSize=14;fontStyle=1;align=left;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#000066;" parent="1" vertex="1">
+          <mxGeometry x="270" y="480" width="250" height="30" as="geometry" />
         </mxCell>
-
-        <mxCell id="dns-vnet-icon" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/networking/Virtual_Networks.svg;" vertex="1" parent="1">
-          <mxGeometry x="232" y="478" width="32" height="32" as="geometry"/>
+        <mxCell id="dns-vnet-icon" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/networking/Virtual_Networks.svg;" parent="1" vertex="1">
+          <mxGeometry x="232" y="478" width="32" height="32" as="geometry" />
         </mxCell>
-
-        <!-- DNS icon -->
-        <mxCell id="dns-icon" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/networking/DNS_Zones.svg;" vertex="1" parent="1">
-          <mxGeometry x="260" y="560" width="55" height="55" as="geometry"/>
+        <mxCell id="dns-icon" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/networking/DNS_Zones.svg;" parent="1" vertex="1">
+          <mxGeometry x="260" y="560" width="55" height="55" as="geometry" />
         </mxCell>
-
-        <!-- DNS zone list -->
-        <mxCell id="dns-zones-text" value="privatelink.cognitiveservices.azure.com&#xa;privatelink.openai.azure.com&#xa;privatelink.services.ai.azure.com&#xa;privatelink.search.windows.net&#xa;privatelink.documents.azure.com&#xa;privatelink.blob.core.windows.net&#xa;privatelink.file.core.windows.net" style="text;html=1;fontSize=9;align=left;verticalAlign=top;fillColor=none;strokeColor=none;fontColor=#333333;fontFamily=Courier New;" vertex="1" parent="1">
-          <mxGeometry x="325" y="535" width="225" height="110" as="geometry"/>
+        <mxCell id="dns-zones-text" value="privatelink.cognitiveservices.azure.com&#xa;privatelink.openai.azure.com&#xa;privatelink.services.ai.azure.com&#xa;privatelink.search.windows.net&#xa;privatelink.documents.azure.com&#xa;privatelink.blob.core.windows.net&#xa;privatelink.file.core.windows.net" style="text;html=1;fontSize=9;align=left;verticalAlign=top;fillColor=none;strokeColor=none;fontColor=#333333;fontFamily=Courier New;" parent="1" vertex="1">
+          <mxGeometry x="325" y="535" width="225" height="110" as="geometry" />
         </mxCell>
-
-        <!-- VNet Peering: Hub to DNS -->
-        <mxCell id="peering-hub-dns" value="VNET&#xa;Peering" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=2;strokeColor=#008080;fontStyle=1;fontSize=10;fontColor=#008080;startArrow=classic;endArrow=classic;" edge="1" source="hub-vnet" target="dns-vnet" parent="1">
-          <mxGeometry relative="1" as="geometry"/>
+        <mxCell id="peering-hub-dns" value="VNET&#xa;Peering" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=2;strokeColor=#008080;fontStyle=1;fontSize=10;fontColor=#008080;startArrow=classic;endArrow=classic;" parent="1" source="hub-vnet" target="dns-vnet" edge="1">
+          <mxGeometry relative="1" as="geometry" />
         </mxCell>
-
-        <!-- ===== SPOKE AZURE VNET ===== -->
-        <mxCell id="spoke-vnet" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#CED8F6;strokeColor=#3366CC;verticalAlign=top;fontSize=13;fontStyle=1;align=center;strokeWidth=2;dashed=1;dashPattern=8 8;" vertex="1" parent="1">
-          <mxGeometry x="700" y="80" width="480" height="370" as="geometry"/>
+        <mxCell id="spoke-vnet" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#CED8F6;strokeColor=#3366CC;verticalAlign=top;fontSize=13;fontStyle=1;align=center;strokeWidth=2;dashed=1;dashPattern=8 8;" parent="1" vertex="1">
+          <mxGeometry x="700" y="80" width="480" height="370" as="geometry" />
         </mxCell>
-
-        <mxCell id="spoke-label" value="Your Spoke Azure VNET" style="text;html=1;fontSize=14;fontStyle=1;align=left;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#000066;" vertex="1" parent="1">
-          <mxGeometry x="750" y="90" width="280" height="30" as="geometry"/>
+        <mxCell id="spoke-label" value="Your Spoke Azure VNET" style="text;html=1;fontSize=14;fontStyle=1;align=left;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#000066;" parent="1" vertex="1">
+          <mxGeometry x="750" y="90" width="280" height="30" as="geometry" />
         </mxCell>
-
-        <mxCell id="spoke-vnet-icon" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/networking/Virtual_Networks.svg;" vertex="1" parent="1">
-          <mxGeometry x="712" y="88" width="32" height="32" as="geometry"/>
+        <mxCell id="spoke-vnet-icon" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/networking/Virtual_Networks.svg;" parent="1" vertex="1">
+          <mxGeometry x="712" y="88" width="32" height="32" as="geometry" />
         </mxCell>
-
-        <!-- Agent subnet box -->
-        <mxCell id="agent-subnet" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8E0F0;strokeColor=#9673a6;verticalAlign=top;fontSize=12;fontStyle=1;align=center;strokeWidth=1;" vertex="1" parent="1">
-          <mxGeometry x="810" y="130" width="310" height="160" as="geometry"/>
+        <mxCell id="agent-subnet" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8E0F0;strokeColor=#9673a6;verticalAlign=top;fontSize=12;fontStyle=1;align=center;strokeWidth=1;" parent="1" vertex="1">
+          <mxGeometry x="810" y="130" width="310" height="160" as="geometry" />
         </mxCell>
-
-        <mxCell id="agent-label" value="Agents,&#xa;Evaluations&#xa;subnet" style="text;html=1;fontSize=14;fontStyle=1;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#333333;" vertex="1" parent="1">
-          <mxGeometry x="830" y="160" width="120" height="80" as="geometry"/>
+        <mxCell id="agent-label" value="Agents,&#xa;Evaluations&#xa;subnet" style="text;html=1;fontSize=14;fontStyle=1;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="830" y="160" width="120" height="80" as="geometry" />
         </mxCell>
-
-        <!-- Agent/Foundry icon -->
-        <mxCell id="agent-icon" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/ai_machine_learning/Cognitive_Services.svg;" vertex="1" parent="1">
-          <mxGeometry x="1010" y="170" width="75" height="56" as="geometry"/>
+        <mxCell id="agent-icon" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/ai_machine_learning/Cognitive_Services.svg;" parent="1" vertex="1">
+          <mxGeometry x="1010" y="170" width="75" height="56" as="geometry" />
         </mxCell>
-
-        <!-- Private endpoint subnet bar -->
-        <mxCell id="pe-subnet" value="Private endpoint subnet" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E0E8F0;strokeColor=#6c8ebf;verticalAlign=middle;fontSize=12;fontStyle=1;align=left;strokeWidth=1;spacingLeft=15;" vertex="1" parent="1">
-          <mxGeometry x="720" y="330" width="440" height="65" as="geometry"/>
+        <mxCell id="pe-subnet" value="Private endpoint subnet" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E0E8F0;strokeColor=#6c8ebf;verticalAlign=middle;fontSize=12;fontStyle=1;align=left;strokeWidth=1;spacingLeft=15;" parent="1" vertex="1">
+          <mxGeometry x="720" y="330" width="440" height="65" as="geometry" />
         </mxCell>
-
-        <!-- PE icons inside the bar -->
-        <mxCell id="pe1" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/networking/Private_Endpoint.svg;" vertex="1" parent="1">
-          <mxGeometry x="900" y="342" width="40" height="40" as="geometry"/>
+        <mxCell id="pe1" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/networking/Private_Endpoint.svg;" parent="1" vertex="1">
+          <mxGeometry x="900" y="342" width="40" height="40" as="geometry" />
         </mxCell>
-        <mxCell id="pe2" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/networking/Private_Endpoint.svg;" vertex="1" parent="1">
-          <mxGeometry x="960" y="342" width="40" height="40" as="geometry"/>
+        <mxCell id="pe2" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/networking/Private_Endpoint.svg;" parent="1" vertex="1">
+          <mxGeometry x="960" y="342" width="40" height="40" as="geometry" />
         </mxCell>
-        <mxCell id="pe3" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/networking/Private_Endpoint.svg;" vertex="1" parent="1">
-          <mxGeometry x="1020" y="342" width="40" height="40" as="geometry"/>
+        <mxCell id="pe3" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/networking/Private_Endpoint.svg;" parent="1" vertex="1">
+          <mxGeometry x="1020" y="342" width="40" height="40" as="geometry" />
         </mxCell>
-        <mxCell id="pe4" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/networking/Private_Endpoint.svg;" vertex="1" parent="1">
-          <mxGeometry x="1080" y="342" width="40" height="40" as="geometry"/>
+        <mxCell id="pe4" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/networking/Private_Endpoint.svg;" parent="1" vertex="1">
+          <mxGeometry x="1080" y="342" width="40" height="40" as="geometry" />
         </mxCell>
-
-        <!-- VNet Peering: Hub to Spoke -->
-        <mxCell id="peering-hub-spoke" value="VNET&#xa;Peering" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=2;strokeColor=#008080;fontStyle=1;fontSize=10;fontColor=#008080;startArrow=classic;endArrow=classic;" edge="1" source="hub-vnet" target="spoke-vnet" parent="1">
-          <mxGeometry relative="1" as="geometry"/>
+        <mxCell id="peering-hub-spoke" value="VNET&#xa;Peering" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=2;strokeColor=#008080;fontStyle=1;fontSize=10;fontColor=#008080;startArrow=classic;endArrow=classic;" parent="1" source="hub-vnet" target="spoke-vnet" edge="1">
+          <mxGeometry relative="1" as="geometry" />
         </mxCell>
-
-        <!-- ===== AZURE RESOURCES BOX ===== -->
-        <mxCell id="resources-box" value="Your Azure Resources for Standard Agent Set-up" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E0E0F0;strokeColor=#9999CC;verticalAlign=bottom;fontSize=14;fontStyle=1;align=center;strokeWidth=2;spacingBottom=10;" vertex="1" parent="1">
-          <mxGeometry x="700" y="530" width="560" height="210" as="geometry"/>
+        <mxCell id="resources-box" value="Your Azure Resources for Standard Agent Set-up" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E0E0F0;strokeColor=#9999CC;verticalAlign=bottom;fontSize=14;fontStyle=1;align=center;strokeWidth=2;spacingBottom=10;" parent="1" vertex="1">
+          <mxGeometry x="700" y="530" width="560" height="210" as="geometry" />
         </mxCell>
-
-        <!-- Azure Storage -->
-        <mxCell id="res-storage-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#CCCCDD;strokeWidth=1;" vertex="1" parent="1">
-          <mxGeometry x="720" y="560" width="110" height="135" as="geometry"/>
+        <mxCell id="res-storage-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#CCCCDD;strokeWidth=1;" parent="1" vertex="1">
+          <mxGeometry x="720" y="560" width="110" height="135" as="geometry" />
         </mxCell>
-        <mxCell id="res-storage-icon" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/storage/Storage_Accounts.svg;" vertex="1" parent="1">
-          <mxGeometry x="745" y="575" width="60" height="48" as="geometry"/>
+        <mxCell id="res-storage-icon" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/storage/Storage_Accounts.svg;" parent="1" vertex="1">
+          <mxGeometry x="745" y="575" width="60" height="48" as="geometry" />
         </mxCell>
-        <mxCell id="res-storage-label" value="Azure&#xa;Storage" style="text;html=1;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#333333;" vertex="1" parent="1">
-          <mxGeometry x="725" y="635" width="100" height="40" as="geometry"/>
+        <mxCell id="res-storage-label" value="Azure&#xa;Storage" style="text;html=1;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="725" y="635" width="100" height="40" as="geometry" />
         </mxCell>
-
-        <!-- AI Search -->
-        <mxCell id="res-search-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#CCCCDD;strokeWidth=1;" vertex="1" parent="1">
-          <mxGeometry x="850" y="560" width="110" height="135" as="geometry"/>
+        <mxCell id="res-search-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#CCCCDD;strokeWidth=1;" parent="1" vertex="1">
+          <mxGeometry x="850" y="560" width="110" height="135" as="geometry" />
         </mxCell>
-        <mxCell id="res-search-icon" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/app_services/Search_Services.svg;" vertex="1" parent="1">
-          <mxGeometry x="875" y="575" width="60" height="60" as="geometry"/>
+        <mxCell id="res-search-icon" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/app_services/Search_Services.svg;" parent="1" vertex="1">
+          <mxGeometry x="875" y="575" width="60" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="res-search-label" value="AI Search" style="text;html=1;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#333333;" vertex="1" parent="1">
-          <mxGeometry x="855" y="640" width="100" height="30" as="geometry"/>
+        <mxCell id="res-search-label" value="AI Search" style="text;html=1;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="855" y="640" width="100" height="30" as="geometry" />
         </mxCell>
-
-        <!-- CosmosDB -->
-        <mxCell id="res-cosmos-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#CCCCDD;strokeWidth=1;" vertex="1" parent="1">
-          <mxGeometry x="980" y="560" width="110" height="135" as="geometry"/>
+        <mxCell id="res-cosmos-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#CCCCDD;strokeWidth=1;" parent="1" vertex="1">
+          <mxGeometry x="980" y="560" width="110" height="135" as="geometry" />
         </mxCell>
-        <mxCell id="res-cosmos-icon" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/databases/Azure_Cosmos_DB.svg;" vertex="1" parent="1">
-          <mxGeometry x="1005" y="575" width="60" height="60" as="geometry"/>
+        <mxCell id="res-cosmos-icon" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/databases/Azure_Cosmos_DB.svg;" parent="1" vertex="1">
+          <mxGeometry x="1005" y="575" width="60" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="res-cosmos-label" value="CosmosDB" style="text;html=1;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#333333;" vertex="1" parent="1">
-          <mxGeometry x="985" y="640" width="100" height="30" as="geometry"/>
+        <mxCell id="res-cosmos-label" value="CosmosDB" style="text;html=1;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="985" y="640" width="100" height="30" as="geometry" />
         </mxCell>
-
-        <!-- Foundry resource -->
-        <mxCell id="res-foundry-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#CCCCDD;strokeWidth=1;" vertex="1" parent="1">
-          <mxGeometry x="1110" y="560" width="120" height="135" as="geometry"/>
+        <mxCell id="res-foundry-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#CCCCDD;strokeWidth=1;" parent="1" vertex="1">
+          <mxGeometry x="1110" y="560" width="120" height="135" as="geometry" />
         </mxCell>
-        <mxCell id="res-foundry-icon" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/ai_machine_learning/Cognitive_Services.svg;" vertex="1" parent="1">
-          <mxGeometry x="1140" y="578" width="60" height="45" as="geometry"/>
+        <mxCell id="res-foundry-icon" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/ai_machine_learning/Cognitive_Services.svg;" parent="1" vertex="1">
+          <mxGeometry x="1140" y="578" width="60" height="45" as="geometry" />
         </mxCell>
-        <mxCell id="res-foundry-label" value="Foundry&#xa;resource" style="text;html=1;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#333333;" vertex="1" parent="1">
-          <mxGeometry x="1115" y="630" width="110" height="40" as="geometry"/>
+        <mxCell id="res-foundry-label" value="Foundry&#xa;resource" style="text;html=1;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="1115" y="630" width="110" height="40" as="geometry" />
         </mxCell>
-
-        <!-- Arrows from PE subnet to resources -->
-        <mxCell id="pe-to-storage" value="" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=2;strokeColor=#333333;" edge="1" source="pe1" target="res-storage-box" parent="1">
-          <mxGeometry relative="1" as="geometry"/>
+        <mxCell id="pe-to-storage" value="" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=2;strokeColor=#333333;" parent="1" source="pe1" target="res-storage-box" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="920" y="430" />
+              <mxPoint x="850" y="430" />
+              <mxPoint x="850" y="628" />
+            </Array>
+          </mxGeometry>
         </mxCell>
-        <mxCell id="pe-to-search" value="" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=2;strokeColor=#333333;" edge="1" source="pe2" target="res-search-box" parent="1">
-          <mxGeometry relative="1" as="geometry"/>
+        <mxCell id="pe-to-search" value="" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=2;strokeColor=#333333;" parent="1" source="pe2" target="res-search-box" edge="1">
+          <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="pe-to-cosmos" value="" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=2;strokeColor=#333333;" edge="1" source="pe3" target="res-cosmos-box" parent="1">
-          <mxGeometry relative="1" as="geometry"/>
+        <mxCell id="pe-to-cosmos" value="" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=2;strokeColor=#333333;" parent="1" source="pe3" target="res-cosmos-box" edge="1">
+          <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="pe-to-foundry" value="" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=2;strokeColor=#333333;" edge="1" source="pe4" target="res-foundry-box" parent="1">
-          <mxGeometry relative="1" as="geometry"/>
+        <mxCell id="pe-to-foundry" value="" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=2;strokeColor=#333333;" parent="1" source="pe4" target="res-foundry-box" edge="1">
+          <mxGeometry relative="1" as="geometry" />
         </mxCell>
-
       </root>
     </mxGraphModel>
   </diagram>
