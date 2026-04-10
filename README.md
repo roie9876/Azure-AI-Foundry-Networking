@@ -962,6 +962,26 @@ az storage account private-endpoint-connection approve \
 > **Without the Shared Private Link**, creating a knowledge source in the Foundry portal will fail with:
 > *"Failed to create knowledge source. An error occurred while processing your request."*
 
+#### 7.4 Enable Semantic Search on AI Search
+
+Template 15 deploys AI Search with **Semantic Search disabled** by default. The knowledge base retrieval requires the semantic ranker — without it, queries will fail with:
+
+> *"SemanticQueriesNotAvailable: Semantic Search is not enabled for this service."*
+
+**Enable via CLI:**
+
+```bash
+az rest --method patch \
+  --url "https://management.azure.com/subscriptions/$SUB_ID/resourceGroups/$RG/providers/Microsoft.Search/searchServices/<search-name>?api-version=2024-06-01-preview" \
+  --body '{"properties":{"semanticSearch":"free"}}'
+```
+
+**Enable via Portal:**
+1. Go to your AI Search service
+2. **Settings** → **Semantic ranker**
+3. Select **Free** (or **Standard** for production)
+4. Click **Save**
+
 ### What Template 15 Creates
 
 | Resource | Purpose | Public Access |
