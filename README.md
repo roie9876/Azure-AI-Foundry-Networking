@@ -844,7 +844,30 @@ nslookup <cosmos-name>.documents.azure.com
 
 Template 15 creates the resources with managed identities, but it does **not** assign all the cross-service RBAC roles needed for knowledge source scenarios (e.g., connecting Azure Blob Storage as a knowledge source in AI Foundry). You must configure these manually.
 
-#### Identify Managed Identity Principal IDs
+#### 7.1 Identify Managed Identity Principal IDs
+
+Each resource deployed by Template 15 has a **system-assigned managed identity**. You need the Principal ID (Object ID) of each to assign RBAC roles.
+
+<details>
+<summary><b>Option A: Find via Azure Portal</b></summary>
+
+For each resource (**AI Services**, **AI Search**, **Storage Account**):
+
+1. Go to the resource in the Azure Portal
+2. Left menu → **Identity** → **System assigned** tab
+3. Verify **Status** is **On**
+4. Copy the **Object (principal) ID**
+
+For the **Foundry Project** managed identity:
+1. Go to your AI Services resource
+2. Left menu → **Resource Management** → **Properties**
+3. Look for the project under connected resources, or:
+4. Go to **Microsoft Entra ID** → **Enterprise applications** → search for your project name → copy the **Object ID**
+
+</details>
+
+<details>
+<summary><b>Option B: Find via CLI</b></summary>
 
 ```bash
 RG="foundry-private"
@@ -868,9 +891,33 @@ echo "Project MI:     $PROJ_MI"
 echo "AI Search MI:   $SEARCH_MI"
 ```
 
-#### Assign RBAC Roles
+</details>
 
-The following roles enable AI Foundry's project to index blob data via AI Search and serve it as a knowledge source:
+#### 7.2 Assign RBAC Roles
+
+The following roles enable AI Foundry's project to index blob data via AI Search and serve it as a knowledge source.
+
+<details>
+<summary><b>Option A: Assign via Azure Portal</b></summary>
+
+For each role assignment in the table below, repeat these steps:
+
+1. Go to the **Target Resource** in the Azure Portal (e.g., your Storage Account)
+2. Left menu → **Access control (IAM)**
+3. Click **+ Add** → **Add role assignment**
+4. **Role** tab → search for the role name (e.g., "Storage Blob Data Contributor") → select it → **Next**
+5. **Members** tab → **Assign access to**: select **Managed identity**
+6. Click **+ Select members**
+7. **Managed identity** dropdown → choose the resource type (e.g., "Cognitive Services" for AI Services, "Search service" for AI Search)
+8. Select the correct identity from the list → **Select**
+9. **Review + assign** → **Review + assign**
+
+Repeat for all 8 role assignments listed in the RBAC Summary table below.
+
+</details>
+
+<details>
+<summary><b>Option B: Assign via CLI</b></summary>
 
 ```bash
 RG="foundry-private"
@@ -917,6 +964,8 @@ az role assignment create --assignee-object-id "$SEARCH_MI" \
   --role "Cognitive Services OpenAI Contributor" --scope "$AI_ID"
 ```
 
+</details>
+
 #### RBAC Summary
 
 | # | Assignee (Managed Identity) | Target Resource | Role | Purpose |
@@ -930,9 +979,38 @@ az role assignment create --assignee-object-id "$SEARCH_MI" \
 | 7 | AI Search | Storage Account | Storage Blob Data Reader | Index blob content |
 | 8 | AI Search | AI Services | Cognitive Services OpenAI Contributor | Generate embeddings for vectorization |
 
-#### Create Shared Private Link (AI Search → Storage)
+#### 7.3 Create Shared Private Link (AI Search → Storage)
 
-In a fully private setup, AI Search cannot reach the storage account over the public internet. You must create a **Shared Private Link** so AI Search can connect to blob storage through a managed private endpoint:
+In a fully private setup, AI Search cannot reach the storage account over the public internet. You must create a **Shared Private Link** so AI Search can connect to blob storage through a managed private endpoint.
+
+<details>
+<summary><b>Option A: Create via Azure Portal</b></summary>
+
+**Create the Shared Private Link:**
+1. Go to your **AI Search** service
+2. Left menu → **Settings** → **Networking**
+3. Click the **Shared private access** tab
+4. Click **+ Add Shared Private Access**
+5. Fill in:
+   - **Name**: `spl-blob-storage`
+   - **Resource type**: `Microsoft.Storage/storageAccounts`
+   - **Resource**: select your storage account
+   - **Target sub-resource**: `blob`
+   - **Request message**: "AI Search indexer access to blob storage"
+6. Click **OK** — status will show **Pending**
+
+**Approve the connection on the Storage Account:**
+1. Go to your **Storage Account**
+2. Left menu → **Security + networking** → **Networking**
+3. Click the **Private endpoint connections** tab
+4. Find the connection with status **Pending** (from AI Search)
+5. Select it → click **Approve**
+6. Add description: "Approved for AI Search indexer" → **Yes**
+
+</details>
+
+<details>
+<summary><b>Option B: Create via CLI</b></summary>
 
 ```bash
 STORAGE_ID=$(az storage account show --name <storage-name> -g $RG --query id -o tsv)
@@ -958,6 +1036,8 @@ az storage account private-endpoint-connection approve \
   --account-name <storage-name> -g $RG \
   --name "$PE_CONN" --description "Approved for AI Search indexer"
 ```
+
+</details>
 
 > **Without the Shared Private Link**, creating a knowledge source in the Foundry portal will fail with:
 > *"Failed to create knowledge source. An error occurred while processing your request."*
