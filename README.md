@@ -427,6 +427,8 @@ Not all agent tools work behind a VNet. Here's the current status:
 
 *Bing, Websearch, and SharePoint use the public internet even in VNet-isolated setups. Block via Azure Policy if needed.
 
+> **SharePoint & AI Search connectivity in hub-spoke:** If you use an AI Search **SharePoint Online indexer**, the traffic from AI Search to SharePoint goes via the **Microsoft Graph API on the Microsoft backbone network**. It does **not** flow through your VNet, UDR, or Azure Firewall. This means SharePoint indexers work regardless of your network topology — no firewall rules, no private endpoints, no SPL needed for SharePoint.
+
 ---
 
 ## Part 7: Feature Limitations with Network Isolation
@@ -549,6 +551,31 @@ az feature register --namespace Microsoft.CognitiveServices --name AI.ManagedVne
 | `Failed async operation` / `Capability host operation failed` | Various | Create support ticket. Check capability host |
 | `Subnet requires delegation to Microsoft.App/environments` | Stale resource | Purge via portal or run `deleteCaphost.sh` |
 | `Timeout of 60000ms` on Agent pages | Can't reach Cosmos DB | Check private endpoint + DNS for Cosmos DB |
+| `Failed to create knowledge source` | Multiple possible causes | See Knowledge Source section below |
+
+### Knowledge Source Creation Failures
+
+Creating a knowledge source (blob → AI Search → Foundry) in the portal is the most error-prone step in a private deployment. Here's a systematic checklist:
+
+| # | Check | How to verify | Fix |
+|---|-------|--------------|-----|
+| 1 | **API key auth enabled on AI Services** | `az cognitiveservices account show --name <name> -g <rg> --query properties.disableLocalAuth` → should be `false` | See section 7.5 above |
+| 2 | **AI Services has RBAC on Storage** | Check AI Services MI has `Storage Blob Data Contributor` on storage account | Assign role (section 7.2) |
+| 3 | **AI Services has RBAC on AI Search** | Check AI Services MI has `Search Index Data Contributor` + `Search Service Contributor` on AI Search | Assign roles (section 7.2) |
+| 4 | **SPL: AI Search → Blob Storage** | `az search shared-private-link-resource list` — should show `blob` with `Approved` status | Create SPL (section 7.3) |
+| 5 | **SPL: AI Search → AI Services** | Same command — should show `openai_account` with `Approved` status | Create SPL (section 7.3) |
+| 6 | **Indexer execution environment** | Check indexer JSON has `"executionEnvironment": "Private"` | Set it (section 7.4) |
+| 7 | **Semantic search enabled** | `az search service show --query properties.semanticSearch` — should be `free` or `standard` | Enable it (section 7.6) |
+| 8 | **AI Search bypass** | `az search service show --query networkRuleSet.bypass` — consider `"AzurePortal"` for portal operations | Set bypass via REST API |
+
+> **Tip:** Check the Azure Activity Log for the actual error details — the portal's generic "Failed to create knowledge source" message hides the real cause:
+> ```bash
+> az monitor activity-log list --resource-group <rg> \
+>   --start-time $(date -u -v-30M '+%Y-%m-%dT%H:%M:%SZ') \
+>   --status Failed \
+>   --query "[].{time:eventTimestamp, operation:operationName.localizedValue, message:properties.statusMessage}" \
+>   -o json
+> ```
 
 ### DNS Issues
 
@@ -979,33 +1006,50 @@ az role assignment create --assignee-object-id "$SEARCH_MI" \
 | 7 | AI Search | Storage Account | Storage Blob Data Reader | Index blob content |
 | 8 | AI Search | AI Services | Cognitive Services OpenAI Contributor | Generate embeddings for vectorization |
 
-#### 7.3 Create Shared Private Link (AI Search → Storage)
+#### 7.3 Create Shared Private Links (AI Search → Storage & AI Services)
 
-In a fully private setup, AI Search cannot reach the storage account over the public internet. You must create a **Shared Private Link** so AI Search can connect to blob storage through a managed private endpoint.
+In a fully private setup, AI Search cannot reach other resources over the public internet. You must create **Shared Private Links (SPLs)** so AI Search can connect through managed private endpoints.
+
+**You need TWO sets of SPLs:**
+
+| # | From | To | Sub-resource | Purpose |
+|---|------|-----|-------------|---------|
+| 1 | AI Search | Storage Account | `blob` | Indexer reads blob data |
+| 2 | AI Search | AI Services | `openai_account` | Indexer calls embedding model (text-embedding-3-small) for vectorization |
+
+> **Why the AI Services SPL?** When you create a knowledge source with "Include embedding model" enabled, AI Search creates a **skillset** that calls the embedding model during indexing. With AI Services public access disabled, AI Search cannot reach the embedding endpoint — unless it has an SPL.
 
 <details>
 <summary><b>Option A: Create via Azure Portal</b></summary>
 
-**Create the Shared Private Link:**
+**For each SPL (repeat for blob + openai_account):**
 1. Go to your **AI Search** service
 2. Left menu → **Settings** → **Networking**
 3. Click the **Shared private access** tab
 4. Click **+ Add Shared Private Access**
 5. Fill in:
+
+**SPL #1 — Blob Storage:**
    - **Name**: `spl-blob-storage`
    - **Resource type**: `Microsoft.Storage/storageAccounts`
    - **Resource**: select your storage account
    - **Target sub-resource**: `blob`
    - **Request message**: "AI Search indexer access to blob storage"
+
+**SPL #2 — AI Services (embedding):**
+   - **Name**: `spl-openai-account`
+   - **Resource type**: `Microsoft.CognitiveServices/accounts`
+   - **Resource**: select your AI Services account
+   - **Target sub-resource**: `openai_account`
+   - **Request message**: "AI Search skillset access to embedding model"
+
 6. Click **OK** — status will show **Pending**
 
-**Approve the connection on the Storage Account:**
-1. Go to your **Storage Account**
-2. Left menu → **Security + networking** → **Networking**
-3. Click the **Private endpoint connections** tab
-4. Find the connection with status **Pending** (from AI Search)
-5. Select it → click **Approve**
-6. Add description: "Approved for AI Search indexer" → **Yes**
+**Approve each connection on the target resource:**
+1. Go to the **target resource** (Storage Account or AI Services account)
+2. Left menu → **Networking** → **Private endpoint connections** tab
+3. Find the connection with status **Pending** (from AI Search)
+4. Select it → click **Approve**
 
 </details>
 
@@ -1014,7 +1058,9 @@ In a fully private setup, AI Search cannot reach the storage account over the pu
 
 ```bash
 STORAGE_ID=$(az storage account show --name <storage-name> -g $RG --query id -o tsv)
+AI_ID=$(az cognitiveservices account show --name <ai-services-name> -g $RG --query id -o tsv)
 
+# SPL #1: AI Search → Blob Storage
 az search shared-private-link-resource create \
   --name "spl-blob-storage" \
   --service-name <search-name> \
@@ -1022,27 +1068,142 @@ az search shared-private-link-resource create \
   --group-id "blob" \
   --resource-id "$STORAGE_ID" \
   --request-message "AI Search indexer access to blob storage"
+
+# SPL #2: AI Search → AI Services (embedding model)
+az search shared-private-link-resource create \
+  --name "spl-openai-account" \
+  --service-name <search-name> \
+  --resource-group $RG \
+  --group-id "openai_account" \
+  --resource-id "$AI_ID" \
+  --request-message "AI Search skillset access to embedding model"
 ```
 
-After creation, **approve** the pending private endpoint connection on the storage account:
+After creation, **approve** the pending private endpoint connections:
 
 ```bash
-# Find the pending connection
+# Approve on Storage Account
 PE_CONN=$(az storage account show --name <storage-name> -g $RG \
   --query "privateEndpointConnections[?properties.privateLinkServiceConnectionState.status=='Pending'].name" -o tsv)
-
-# Approve it
 az storage account private-endpoint-connection approve \
   --account-name <storage-name> -g $RG \
   --name "$PE_CONN" --description "Approved for AI Search indexer"
+
+# Approve on AI Services
+# (Check in the portal under AI Services → Networking → Private endpoint connections)
 ```
 
 </details>
 
-> **Without the Shared Private Link**, creating a knowledge source in the Foundry portal will fail with:
-> *"Failed to create knowledge source. An error occurred while processing your request."*
+> **Without the Shared Private Links**, creating a knowledge source in the Foundry portal will fail with:
+> *"Failed to create knowledge source. Failed to create or update Knowledge Source."*
 
-#### 7.4 Enable Semantic Search on AI Search
+> **Note:** AI Search supports SPLs to AI Services with sub-resources `openai_account` and `foundry_account`. The `cognitiveservices_account` sub-resource may fail to provision — `openai_account` is the one needed for embedding skillsets.
+
+#### 7.4 Set Indexer Execution Environment to Private
+
+When AI Search uses **Shared Private Links**, the indexer **must** run in the private execution environment. By default, Azure AI Search may run indexers in a multitenant environment — which cannot use SPLs.
+
+You must set `"executionEnvironment": "Private"` on each indexer.
+
+> **Reference:** [Considerations for using a private endpoint](https://learn.microsoft.com/en-us/azure/search/search-indexer-securing-resources#considerations-for-using-a-private-endpoint)
+
+**Why?** Azure AI Search has two indexer execution environments:
+- **Multitenant** — shared compute managed by Microsoft. Cannot use shared private links.
+- **Private** — runs within the search service itself. **Required** when using SPLs.
+
+If you don't set this, the indexer may run in the multitenant environment and fail with `transientFailure` because it can't reach the storage account or AI Services through the SPL.
+
+**Set via REST API:**
+
+```bash
+# Get your AI Search admin key (or use managed identity auth)
+SEARCH_NAME="<search-name>"
+RG="<resource-group>"
+SEARCH_KEY=$(az search admin-key show --service-name $SEARCH_NAME -g $RG --query primaryKey -o tsv)
+
+# Update the indexer to use private execution environment
+curl -X PUT "https://${SEARCH_NAME}.search.windows.net/indexers/<indexer-name>?api-version=2024-07-01" \
+  -H "Content-Type: application/json" \
+  -H "api-key: ${SEARCH_KEY}" \
+  -d '{
+    "name": "<indexer-name>",
+    "dataSourceName": "<datasource-name>",
+    "targetIndexName": "<index-name>",
+    "skillsetName": "<skillset-name>",
+    "parameters": {
+      "configuration": {
+        "executionEnvironment": "Private"
+      }
+    }
+  }'
+```
+
+**Set via Azure Portal:**
+1. Go to your **AI Search** service
+2. Left menu → **Search management** → **Indexers**
+3. Click on your indexer → **Indexer Definition (JSON)**
+4. Add `"executionEnvironment": "Private"` under `parameters.configuration`
+5. Click **Save**
+
+```json
+{
+  "name": "my-indexer",
+  "dataSourceName": "my-datasource",
+  "targetIndexName": "my-index",
+  "skillsetName": "my-skillset",
+  "parameters": {
+    "configuration": {
+      "executionEnvironment": "Private"
+    }
+  }
+}
+```
+
+> **Important:** This setting is per-indexer, not per-service. Every indexer that uses an SPL must have this set individually.
+
+#### 7.5 Enable API Key Authentication on AI Services (`disableLocalAuth`)
+
+The Foundry Portal's knowledge source creation flow currently requires **API key authentication** to be enabled on your AI Services account. This is a portal limitation — internally it calls `List Keys` to embed the API key in the AI Search skillset definition.
+
+If `disableLocalAuth` is set to `true` (meaning API keys are disabled, Entra-only auth), you will see repeated failures:
+
+> *"Failed to list key. disableLocalAuth is set to be true"*
+
+**How to check:**
+```bash
+az cognitiveservices account show --name <ai-services-name> -g $RG \
+  --query "{disableLocalAuth:properties.disableLocalAuth}" -o json
+```
+
+**How to enable API keys:**
+
+In the Azure Portal:
+1. Go to your **AI Services** resource
+2. Left menu → **Properties**
+3. Set **"Allow API key based authentication"** to **Enabled**
+4. Click **Save**
+
+Via CLI:
+```bash
+az rest --method PATCH \
+  --url "https://management.azure.com/<ai-services-resource-id>?api-version=2024-10-01" \
+  --headers "Content-Type=application/json" \
+  --body '{"properties":{"disableLocalAuth":false}}'
+```
+
+> **⚠️ Azure Policy Warning:** Some enterprise subscriptions have a **modify policy** (`CognitiveServices_LocalAuth_Modify`) that automatically enforces `disableLocalAuth=true` on every deployment. If your changes keep reverting, check for policy enforcement:
+> ```bash
+> az policy state list \
+>   --resource "<ai-services-resource-id>" \
+>   --query "[?policyDefinitionAction=='modify'].{policy:policyDefinitionName, action:policyDefinitionAction}" \
+>   -o table
+> ```
+> If a modify policy is active, you need a **policy exemption** from your governance team before you can enable API keys.
+
+> **Security note:** With all public network access disabled and private endpoints in place, enabling API key auth has minimal security impact — the keys are useless without network access to the resource. The real protection comes from the network isolation, not key disablement.
+
+#### 7.6 Enable Semantic Search on AI Search
 
 Template 15 deploys AI Search with **Semantic Search disabled** by default. The knowledge base retrieval requires the semantic ranker — without it, queries will fail with:
 
