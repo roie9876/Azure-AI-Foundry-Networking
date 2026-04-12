@@ -875,6 +875,18 @@ Template 15 creates the resources with managed identities, but it does **not** a
 
 Each resource deployed by Template 15 has a **system-assigned managed identity**. You need the Principal ID (Object ID) of each to assign RBAC roles.
 
+> **🔑 Clarifying the identities — this is confusing!**
+>
+> There are **three** managed identities involved, and the naming is misleading:
+>
+> | Portal / CLI name | What it actually is | Azure resource type |
+> |-------------------|--------------------|--------------------|
+> | **AI Services** (or "Foundry Account") | **This IS the Foundry resource itself.** In the Azure Portal it appears as `Microsoft.CognitiveServices/accounts`. When you see "Foundry" in the portal breadcrumb, that's this resource. It's the hub that hosts your models (GPT-4.1, text-embedding-3-small) and orchestrates everything. **This is NOT Azure AI Search.** | `Microsoft.CognitiveServices/accounts` |
+> | **Foundry Project** | A child resource under the AI Services account. Each project has its own separate managed identity. In the portal it appears under **Resource Management → Projects**. | `Microsoft.CognitiveServices/accounts/projects` |
+> | **AI Search** | The Azure AI Search service. A completely separate resource from AI Services/Foundry. | `Microsoft.Search/searchServices` |
+>
+> **Common confusion:** People often think "AI Services" refers to AI Search — it doesn't. **AI Services = Foundry = the resource that hosts your models.** AI Search is a separate service used for indexing and retrieval.
+
 <details>
 <summary><b>Option A: Find via Azure Portal</b></summary>
 
@@ -997,14 +1009,14 @@ az role assignment create --assignee-object-id "$SEARCH_MI" \
 
 | # | Assignee (Managed Identity) | Target Resource | Role | Purpose |
 |---|---------------------------|-----------------|------|---------|
-| 1 | AI Services | Storage Account | Storage Blob Data Contributor | Read/write blob data |
-| 2 | Foundry Project | Storage Account | Storage Blob Data Contributor | Read/write blob data |
-| 3 | AI Services | AI Search | Search Index Data Contributor | Create/manage indexes |
-| 4 | AI Services | AI Search | Search Service Contributor | Manage search service |
-| 5 | Foundry Project | AI Search | Search Index Data Contributor | Create/manage indexes |
-| 6 | Foundry Project | AI Search | Search Service Contributor | Manage search service |
-| 7 | AI Search | Storage Account | Storage Blob Data Reader | Index blob content |
-| 8 | AI Search | AI Services | Cognitive Services OpenAI Contributor | Generate embeddings for vectorization |
+| 1 | **AI Services** *(= Foundry resource, NOT AI Search)* | Storage Account | Storage Blob Data Contributor | Read/write blob data |
+| 2 | **Foundry Project** *(child of AI Services)* | Storage Account | Storage Blob Data Contributor | Read/write blob data |
+| 3 | **AI Services** *(= Foundry resource)* | AI Search | Search Index Data Contributor | Create/manage indexes |
+| 4 | **AI Services** *(= Foundry resource)* | AI Search | Search Service Contributor | Manage search service |
+| 5 | **Foundry Project** | AI Search | Search Index Data Contributor | Create/manage indexes |
+| 6 | **Foundry Project** | AI Search | Search Service Contributor | Manage search service |
+| 7 | **AI Search** | Storage Account | Storage Blob Data Reader | Index blob content |
+| 8 | **AI Search** | AI Services *(= Foundry)* | Cognitive Services OpenAI Contributor | Generate embeddings for vectorization |
 
 #### 7.3 Create Shared Private Links (AI Search → Storage & AI Services)
 
