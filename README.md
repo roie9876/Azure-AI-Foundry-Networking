@@ -1,6 +1,38 @@
 # Microsoft Foundry Networking — The Complete Guide
 
-> **Updated March 2026** — Covers all networking options for Microsoft Foundry (formerly Azure AI Foundry), including Private Link, Managed VNet, BYO VNet injection, and Network Security Perimeter.
+> **Updated April 2026** — Covers all networking options for Microsoft Foundry (formerly Azure AI Foundry), including Private Link, Managed VNet, BYO VNet injection, and Network Security Perimeter.
+
+---
+
+## Table of Contents
+
+- [Why Is This So Confusing?](#why-is-this-so-confusing)
+- [Part 1: The Components — What Needs Network Protection?](#part-1-the-components--what-needs-network-protection)
+- [Part 2: The Three Network Directions](#part-2-the-three-network-directions)
+  - [Direction 1: Inbound](#direction-1-inbound--who-can-reach-your-foundry-resource)
+  - [Direction 2: Outbound from Foundry](#direction-2-outbound-from-foundry--how-it-reaches-azure-services)
+  - [Direction 3: Outbound from Agent compute](#direction-3-outbound-from-agent-compute--how-your-agents-reach-data)
+- [Part 3: The Four Network Options](#part-3-the-four-network-options-and-when-to-use-each)
+  - [Option A: Private Link (Inbound)](#option-a-private-link-inbound-isolation--ga)
+  - [Option B: BYO VNet Injection (Outbound)](#option-b-byo-vnet-injection-outbound-isolation--ga)
+  - [Option C: Managed VNet (Outbound)](#option-c-managed-vnet-outbound-isolation--preview)
+  - [Option D: Network Security Perimeter](#option-d-network-security-perimeter-nsp--preview)
+- [Part 4: Decision Guide](#part-4-how-it-all-fits-together--decision-guide)
+- [Part 5: Agent Setup Tiers](#part-5-agent-setup-tiers--when-do-you-provide-resources)
+- [Part 5b: How Dependent Resources Connect — AI Search Networking Deep Dive](#part-5b-how-dependent-resources-connect--ai-search-networking-deep-dive)
+  - [Mechanism 1: Trusted Services Exception (Inbound to AI Search)](#mechanism-1-trusted-services-exception-inbound-to-ai-search)
+  - [Mechanism 2: Shared Private Access (Outbound from AI Search)](#mechanism-2-shared-private-access-outbound-from-ai-search)
+  - [Comparison: Trusted Services vs Shared Private Access](#comparison-trusted-services-vs-shared-private-access)
+  - [What Your Private Deployment Should Use](#what-your-private-deployment-should-use)
+- [Part 6: Agent Tools — Network Support Matrix](#part-6-agent-tools--network-support-matrix)
+- [Part 7: Feature Limitations with Network Isolation](#part-7-feature-limitations-with-network-isolation)
+- [Part 8: Known Limitations](#part-8-known-limitations)
+- [Part 9: RBAC Roles Required](#part-9-rbac-roles-required)
+- [Part 10: Resource Provider Registrations](#part-10-resource-provider-registrations)
+- [Part 11: Troubleshooting](#part-11-troubleshooting)
+- [Part 12: Which Bicep Template Should I Use?](#part-12-which-bicep-template-should-i-use)
+- [References — The Microsoft Docs Map](#references--the-microsoft-docs-map)
+- [Part 13: Hands-On — Deploying Template 15 in a Hub-Spoke Network](#part-8-hands-on--deploying-template-15-in-a-hub-spoke-network)
 
 ---
 
@@ -398,6 +430,130 @@ If you dig into the Azure portal or use the REST API, you will encounter an obje
 > Capability hosts are **immutable**. If you change your network setup, you must delete the capability host and recreate it. Occasionally, a capability host can get "stuck" in a deleting or failed state, making it impossible to delete from the UI (which can prevent you from dropping or changing your subnets). 
 > 
 > If you get stuck with a locked capability host, there is a manual cleanup procedure. You can use the `deleteCaphost.sh` script or direct Azure CLI REST API calls to force-delete the "zombie" capability host object so you can start fresh. (Check the official GitHub/Microsoft troubleshooting guides for the exact cleanup script).
+
+---
+
+## Part 5b: How Dependent Resources Connect — AI Search Networking Deep Dive
+
+When you deploy a fully private Foundry setup (Scenario 3 / Template 15), all your BYO resources — AI Search, Storage, Cosmos DB, AI Services — have **public access disabled**. But these resources need to talk to *each other*, not just to Foundry and your agents.
+
+This section explains the two networking mechanisms that control **how Azure AI Search connects to and from other services** in a private deployment. These are often confused because they appear on the same Networking page in the portal — but they solve completely different problems.
+
+```
+                          ┌──────────────────────┐
+      Foundry/OpenAI ───► │   Azure AI Search    │ ───► Azure Storage
+       (INBOUND)          │   (your resource)    │       (OUTBOUND)
+                          └──────────────────────┘
+                          
+      Controlled by:          Controlled by:
+      "Trusted Services"      "Shared Private Access"
+      checkbox                (shared private links)
+```
+
+### Mechanism 1: Trusted Services Exception (Inbound to AI Search)
+
+**Direction: INBOUND** — Other Azure services reaching *into* AI Search.
+
+On the AI Search Networking page → **Firewalls and virtual networks** tab, there is a checkbox under **Exceptions**:
+
+> ☑ Allow Azure services on the trusted services list to access this search service.
+
+![AI Search Trusted Services Exception](images/ai-search-trusted-services.jpeg)
+
+**What this does:** When public access is **Disabled**, nobody can reach AI Search — not even other Azure services. Checking this box creates an exception for specific Azure services that Microsoft considers "trusted." These services can bypass the IP firewall using their **managed identity** instead of a network path.
+
+**The trusted services list for AI Search includes:**
+
+| Trusted Service | Resource Provider | Why it needs access |
+|---|---|---|
+| **Microsoft Foundry / Azure OpenAI** | `Microsoft.CognitiveServices` | RAG patterns — Foundry queries AI Search to retrieve relevant documents for "Azure OpenAI On Your Data" |
+| **Azure Machine Learning** | `Microsoft.MachineLearningServices` | ML pipelines that query search indexes |
+
+**How it works under the hood:**
+1. The trusted service (e.g., Foundry) has a **system-assigned managed identity**
+2. That identity has a **role assignment** on the AI Search service (e.g., `Search Index Data Reader` or `Search Index Data Contributor`)
+3. The service authenticates via Microsoft Entra ID — no API keys, no public IP needed
+4. AI Search validates the Entra token and checks the caller is on the trusted list
+5. The request is allowed through even though public access is disabled
+
+**Key characteristics:**
+- **Free** — no additional cost
+- **Identity-based** — relies on Entra ID + RBAC, not network paths
+- **Limited scope** — only the services on Microsoft's trusted list can use this; you can't add arbitrary services
+- Works even when public network access is **Disabled** (that's the whole point)
+
+> **Ref:** [Configure network access and firewall rules for Azure AI Search](https://learn.microsoft.com/en-us/azure/search/service-configure-firewall#grant-access-to-trusted-azure-services)
+
+### Mechanism 2: Shared Private Access (Outbound from AI Search)
+
+**Direction: OUTBOUND** — AI Search reaching *out* to other Azure resources.
+
+On the AI Search Networking page → **Shared private access** tab, you can create **Shared Private Links (SPLs)** that let AI Search connect to other resources through managed private endpoints.
+
+![AI Search Shared Private Access](images/ai-search-shared-private-access.jpeg)
+
+**What this does:** AI Search indexers and vectorizers need to read data from Storage, call embedding models on AI Services, write to knowledge stores, etc. When those target resources have public access disabled, AI Search can't reach them — unless it has a private connection. Shared Private Access creates a **private endpoint managed by Microsoft** (inside Microsoft's infrastructure, not your VNet) that connects AI Search to a specific target resource.
+
+**In a typical private Foundry deployment, you need these SPLs:**
+
+| # | Name | Target Resource | Sub-resource | Purpose |
+|---|------|----------------|-------------|---------|
+| 1 | `shared-to-blob` | Azure Storage | `blob` | Indexer reads blob data; enrichment cache; debug sessions; knowledge store |
+| 2 | `foundry_account` | AI Services | `foundry_account` | Billing and skills processing |
+| 3 | `openai_account` | AI Services | `openai_account` | Calls embedding model (e.g., `text-embedding-3-small`) during indexing for integrated vectorization |
+| 4 | `cognitive_account` | AI Services | `cognitiveservices_account` | Built-in cognitive skills (OCR, entity recognition, etc.) |
+
+**How it works under the hood:**
+1. You create the shared private link on AI Search (portal → Shared private access → Add)
+2. Microsoft deploys a private endpoint inside its managed infrastructure — AI Search gets a private IP for talking to the target resource
+3. The target resource owner must **approve** the connection (it shows as "Pending" until approved)
+4. Once approved, AI Search always uses this private path for that resource — it's enforced, not optional
+5. **Indexers must run in the private execution environment** — set `"executionEnvironment": "Private"` on each indexer (see [Section 7.4](#74-set-indexer-execution-environment-to-private))
+
+**Key characteristics:**
+- **Billed** — based on [Azure Private Link pricing](https://azure.microsoft.com/pricing/details/private-link/)
+- **Network-based** — creates an actual private endpoint with a private IP
+- **Requires approval** — the target resource owner must approve each connection
+- **Forces private execution** — indexers using SPLs cannot run in the multitenant environment
+- **Per-resource** — one SPL per resource + sub-resource combination
+
+> **Important:** Once an SPL is created for a resource, AI Search **always** uses it for connections to that resource. You can't bypass the private connection for a public one. This is enforced internally.
+
+> **Ref:** [Make outbound connections through a shared private link](https://learn.microsoft.com/en-us/azure/search/search-indexer-howto-access-private)
+
+### Comparison: Trusted Services vs Shared Private Access
+
+| | Trusted Services Exception | Shared Private Access (SPLs) |
+|---|---|---|
+| **Traffic direction** | **Inbound** to AI Search | **Outbound** from AI Search |
+| **What it controls** | Who can call/query AI Search | What AI Search indexers/vectorizers can reach |
+| **Mechanism** | Firewall bypass via managed identity + RBAC | Private endpoint created by AI Search in Microsoft-managed infrastructure |
+| **Cost** | **Free** | **Billed** (Azure Private Link pricing) |
+| **Setup complexity** | Low — checkbox + role assignments | Medium — create link, approve on target, configure indexer execution |
+| **Security model** | Identity-based (Entra ID + RBAC) | Network-based (private endpoint, no public internet) |
+| **Alternative** | Private endpoint from your VNet to AI Search (which Template 15 already creates) | IP firewall rules on target resource (weaker, doesn't work for same-region storage) |
+| **One or the other?** | No — **they can coexist.** One is inbound, the other is outbound. | |
+
+### What Your Private Deployment Should Use
+
+In a full enterprise lockdown (Template 15 / hub-spoke), here's the recommendation:
+
+| Feature | Recommendation | Reason |
+|---|---|---|
+| **Trusted services checkbox** | **Leave unchecked** (most restrictive) | You already have a private endpoint for AI Search in your `pe-subnet`. Foundry reaches AI Search through that PE. The checkbox is redundant and slightly widens the attack surface. |
+| **Shared private access** | **Required — create 2-4 SPLs** | Without these, AI Search indexers can't reach your locked-down Storage and AI Services. Knowledge source creation will fail. |
+
+**If you enable the trusted services checkbox anyway:**
+- It's a **belt-and-suspenders** approach — Foundry can reach AI Search via PE *or* via the trusted exception
+- There's no conflict, but it's less restrictive than PE-only
+- Some organizations enable it during troubleshooting and forget to disable it — not ideal for zero-trust posture
+
+**If you skip the shared private access:**
+- AI Search indexers **will fail** with `transientFailure` errors
+- Knowledge source creation in the Foundry portal will fail with: *"Failed to create knowledge source"*
+- The indexer literally cannot reach the blob storage or embedding model endpoint
+
+> **Note:** Azure AI Search is *also* on the trusted services list of **other** Azure resources. For example, you can use the trusted service exception to let [AI Search connect to Azure Storage as a trusted service](https://learn.microsoft.com/en-us/azure/search/search-indexer-howto-access-trusted-service-exception). However, this only works for **blob and ADLS Gen2** on Azure Storage, and only with a **system-assigned managed identity**. In a fully private deployment with SPLs, you don't need this — the SPL already provides the private connection.
 
 ---
 
@@ -875,6 +1031,14 @@ Template 15 creates the resources with managed identities, but it does **not** a
 
 Each resource deployed by Template 15 has a **system-assigned managed identity**. You need the Principal ID (Object ID) of each to assign RBAC roles.
 
+**Foundry Project identity** — note the breadcrumb shows this is the *project* (`projectu6s7`), a child of AI Services, with its own separate MI:
+
+![Foundry Project Managed Identity](images/project-identity.jpeg)
+
+**AI Search identity** — a completely separate resource with its own MI:
+
+![AI Search Managed Identity](images/ai-search-identity.jpeg)
+
 > **🔑 Clarifying the identities — this is confusing!**
 >
 > There are **three** managed identities involved, and the naming is misleading:
@@ -935,6 +1099,14 @@ echo "AI Search MI:   $SEARCH_MI"
 #### 7.2 Assign RBAC Roles
 
 The following roles enable AI Foundry's project to index blob data via AI Search and serve it as a knowledge source.
+
+**AI Search IAM** — AI Services + Project MIs get Search Index Data Contributor + Search Service Contributor:
+
+![AI Search IAM Role Assignments](images/ai-search-iam-roles.jpeg)
+
+**Storage IAM** — AI Services, Project, and AI Search MIs all get Storage Blob Data Contributor; Project also gets Storage Blob Data Owner:
+
+![Storage IAM Role Assignments](images/storage-iam-roles.jpeg)
 
 <details>
 <summary><b>Option A: Assign via Azure Portal</b></summary>
@@ -1107,6 +1279,14 @@ az storage account private-endpoint-connection approve \
 
 </details>
 
+**How SPLs appear on the target resource:** When AI Search creates an SPL to Storage, it shows up as a private endpoint connection on the Storage Account's Networking page. Notice there are **two** connections — the Template 15 PE ("Auto-Approved") and the AI Search SPL (`shared-to-blob`, "Approved"):
+
+![Storage Private Endpoint Connections](images/storage-pe-connections.jpeg)
+
+The Storage Account's public access is fully **Disabled** — all access goes through private endpoints:
+
+![Storage Public Access Disabled](images/storage-public-access-disabled.jpeg)
+
 > **Without the Shared Private Links**, creating a knowledge source in the Foundry portal will fail with:
 > *"Failed to create knowledge source. Failed to create or update Knowledge Source."*
 
@@ -1157,6 +1337,10 @@ curl -X PUT "https://${SEARCH_NAME}.search.windows.net/indexers/<indexer-name>?a
 3. Click on your indexer → **Indexer Definition (JSON)**
 4. Add `"executionEnvironment": "Private"` under `parameters.configuration`
 5. Click **Save**
+
+![Indexer List — Success status with Restricted Access banner](images/ai-search-indexer-private1.jpeg)
+
+![Indexer JSON — executionEnvironment set to Private (line 22)](images/ai-search-indexer-private2.jpeg)
 
 ```json
 {
