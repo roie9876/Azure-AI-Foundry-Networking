@@ -719,7 +719,9 @@ Creating a knowledge source (blob → AI Search → Foundry) in the portal is th
 | 2 | **AI Services has RBAC on Storage** | Check AI Services MI has `Storage Blob Data Contributor` on storage account | Assign role (section 7.2) |
 | 3 | **AI Services has RBAC on AI Search** | Check AI Services MI has `Search Index Data Contributor` + `Search Service Contributor` on AI Search | Assign roles (section 7.2) |
 | 4 | **SPL: AI Search → Blob Storage** | `az search shared-private-link-resource list` — should show `blob` with `Approved` status | Create SPL (section 7.3) |
-| 5 | **SPL: AI Search → AI Services** | Same command — should show `openai_account` with `Approved` status | Create SPL (section 7.3) |
+| 5 | **SPL: AI Search → Foundry Account** | Same command — should show `foundry_account` with `Approved` status | Create SPL (section 7.3) |
+| 6 | **SPL: AI Search → OpenAI Account** | Same command — should show `openai_account` with `Approved` status | Create SPL (section 7.3) |
+| 7 | **SPL: AI Search → Cognitive Account** | Same command — should show `cognitiveservices_account` with `Approved` status | Create SPL (section 7.3) |
 | 6 | **Indexer execution environment** | Check indexer JSON has `"executionEnvironment": "Private"` | Set it (section 7.4) |
 | 7 | **Semantic search enabled** | `az search service show --query properties.semanticSearch` — should be `free` or `standard` | Enable it (section 7.6) |
 | 8 | **AI Search bypass** | `az search service show --query networkRuleSet.bypass` — consider `"AzurePortal"` for portal operations | Set bypass via REST API |
@@ -1194,19 +1196,55 @@ az role assignment create --assignee-object-id "$SEARCH_MI" \
 
 In a fully private setup, AI Search cannot reach other resources over the public internet. You must create **Shared Private Links (SPLs)** so AI Search can connect through managed private endpoints.
 
-**You need TWO sets of SPLs:**
+**Topology — AI Search Shared Private Links (outbound connections):**
 
-| # | From | To | Sub-resource | Purpose |
+```
+                          ┌─────────────────────────────────┐
+                          │       Azure AI Search           │
+                          │    (aiservicesu6s7search)       │
+                          │                                 │
+                          │   Public access: Disabled       │
+                          │   Trusted services: Enabled     │
+                          └──────────┬──────────────────────┘
+                                     │
+                    Shared Private Links (SPLs)
+                    ─────────────────────────────
+                    │            │            │            │
+              ┌─────▼────┐ ┌────▼─────┐ ┌────▼─────┐ ┌────▼──────┐
+              │  blob     │ │ foundry  │ │ openai   │ │ cognitive │
+              │          │ │ _account │ │ _account │ │ _account  │
+              └─────┬────┘ └────┬─────┘ └────┬─────┘ └────┬──────┘
+                    │           │             │             │
+              ┌─────▼────┐ ┌────▼─────────────▼─────────────▼──────┐
+              │ Storage  │ │         AI Services Account           │
+              │ Account  │ │        (aiservicesu6s7)               │
+              │ (blob)   │ │                                       │
+              │          │ │  foundry_account = Foundry control    │
+              └──────────┘ │  openai_account  = Embedding models  │
+                           │  cognitive_account = AI Services API  │
+                           └───────────────────────────────────────┘
+```
+
+**You need FOUR SPLs:**
+
+| # | Name | To | Sub-resource | Purpose |
 |---|------|-----|-------------|---------|
-| 1 | AI Search | Storage Account | `blob` | Indexer reads blob data |
-| 2 | AI Search | AI Services | `openai_account` | Indexer calls embedding model (text-embedding-3-small) for vectorization |
+| 1 | `shared-to-blob` | Storage Account | `blob` | Indexer reads blob data |
+| 2 | `foundry_account` | AI Services | `foundry_account` | Foundry control plane connection (agent orchestration, knowledge source management) |
+| 3 | `openai_account` | AI Services | `openai_account` | Indexer calls embedding model (e.g., text-embedding-3-small) for vectorization skillsets |
+| 4 | `cognitive_account` | AI Services | `cognitiveservices_account` | AI Search built-in cognitive skills (OCR, entity recognition, key phrase extraction) |
 
-> **Why the AI Services SPL?** When you create a knowledge source with "Include embedding model" enabled, AI Search creates a **skillset** that calls the embedding model during indexing. With AI Services public access disabled, AI Search cannot reach the embedding endpoint — unless it has an SPL.
+> **Why FOUR SPLs to the same AI Services account?** Each sub-resource exposes a different API surface. The AI Services account is a single resource, but AI Search needs separate private connections to reach different capabilities:
+> - `openai_account` — embedding models for vectorization during indexing
+> - `foundry_account` — Foundry control plane for knowledge source integration
+> - `cognitiveservices_account` — built-in cognitive skills for document enrichment
+
+![AI Search Shared Private Access](images/ai-search-shared-private-access.jpeg)
 
 <details>
 <summary><b>Option A: Create via Azure Portal</b></summary>
 
-**For each SPL (repeat for blob + openai_account):**
+**For each SPL (repeat 4 times):**
 1. Go to your **AI Search** service
 2. Left menu → **Settings** → **Networking**
 3. Click the **Shared private access** tab
@@ -1214,26 +1252,42 @@ In a fully private setup, AI Search cannot reach other resources over the public
 5. Fill in:
 
 **SPL #1 — Blob Storage:**
-   - **Name**: `spl-blob-storage`
+   - **Name**: `shared-to-blob`
    - **Resource type**: `Microsoft.Storage/storageAccounts`
    - **Resource**: select your storage account
    - **Target sub-resource**: `blob`
-   - **Request message**: "AI Search indexer access to blob storage"
+   - **Request message**: "shared to blob"
 
-**SPL #2 — AI Services (embedding):**
-   - **Name**: `spl-openai-account`
+**SPL #2 — Foundry Account:**
+   - **Name**: `foundry_account`
+   - **Resource type**: `Microsoft.CognitiveServices/accounts`
+   - **Resource**: select your AI Services account
+   - **Target sub-resource**: `foundry_account`
+   - **Request message**: "foundry_account"
+
+**SPL #3 — OpenAI Account (embedding):**
+   - **Name**: `openai_account`
    - **Resource type**: `Microsoft.CognitiveServices/accounts`
    - **Resource**: select your AI Services account
    - **Target sub-resource**: `openai_account`
-   - **Request message**: "AI Search skillset access to embedding model"
+   - **Request message**: "openai_account"
+
+**SPL #4 — Cognitive Services Account:**
+   - **Name**: `cognitive_account`
+   - **Resource type**: `Microsoft.CognitiveServices/accounts`
+   - **Resource**: select your AI Services account
+   - **Target sub-resource**: `cognitiveservices_account`
+   - **Request message**: "cognitive_account"
 
 6. Click **OK** — status will show **Pending**
 
 **Approve each connection on the target resource:**
 1. Go to the **target resource** (Storage Account or AI Services account)
 2. Left menu → **Networking** → **Private endpoint connections** tab
-3. Find the connection with status **Pending** (from AI Search)
-4. Select it → click **Approve**
+3. Find the connection(s) with status **Pending** (from AI Search)
+4. Select each → click **Approve**
+
+> **Note:** SPLs #2, #3, and #4 all target the same AI Services account but different sub-resources. You'll see 3 pending connections on the AI Services Networking page.
 
 </details>
 
@@ -1246,21 +1300,39 @@ AI_ID=$(az cognitiveservices account show --name <ai-services-name> -g $RG --que
 
 # SPL #1: AI Search → Blob Storage
 az search shared-private-link-resource create \
-  --name "spl-blob-storage" \
+  --name "shared-to-blob" \
   --service-name <search-name> \
   --resource-group $RG \
   --group-id "blob" \
   --resource-id "$STORAGE_ID" \
-  --request-message "AI Search indexer access to blob storage"
+  --request-message "shared to blob"
 
-# SPL #2: AI Search → AI Services (embedding model)
+# SPL #2: AI Search → Foundry Account
 az search shared-private-link-resource create \
-  --name "spl-openai-account" \
+  --name "foundry_account" \
+  --service-name <search-name> \
+  --resource-group $RG \
+  --group-id "foundry_account" \
+  --resource-id "$AI_ID" \
+  --request-message "foundry_account"
+
+# SPL #3: AI Search → OpenAI Account (embedding model)
+az search shared-private-link-resource create \
+  --name "openai_account" \
   --service-name <search-name> \
   --resource-group $RG \
   --group-id "openai_account" \
   --resource-id "$AI_ID" \
-  --request-message "AI Search skillset access to embedding model"
+  --request-message "openai_account"
+
+# SPL #4: AI Search → Cognitive Services Account
+az search shared-private-link-resource create \
+  --name "cognitive_account" \
+  --service-name <search-name> \
+  --resource-group $RG \
+  --group-id "cognitiveservices_account" \
+  --resource-id "$AI_ID" \
+  --request-message "cognitive_account"
 ```
 
 After creation, **approve** the pending private endpoint connections:
@@ -1290,7 +1362,7 @@ The Storage Account's public access is fully **Disabled** — all access goes th
 > **Without the Shared Private Links**, creating a knowledge source in the Foundry portal will fail with:
 > *"Failed to create knowledge source. Failed to create or update Knowledge Source."*
 
-> **Note:** AI Search supports SPLs to AI Services with sub-resources `openai_account` and `foundry_account`. The `cognitiveservices_account` sub-resource may fail to provision — `openai_account` is the one needed for embedding skillsets.
+> **Note:** Template 15 creates the `shared-to-blob` SPL automatically. The `foundry_account`, `openai_account`, and `cognitive_account` SPLs are created by the Foundry platform when you set up knowledge sources or agents with AI Search integration. You may need to manually create them if the automated process fails in a fully private setup.
 
 #### 7.4 Set Indexer Execution Environment to Private
 
