@@ -24,6 +24,7 @@
   - [Mechanism 2: Shared Private Access (Outbound from AI Search)](#mechanism-2-shared-private-access-outbound-from-ai-search)
   - [Comparison: Trusted Services vs Shared Private Access](#comparison-trusted-services-vs-shared-private-access)
   - [What Your Private Deployment Should Use](#what-your-private-deployment-should-use)
+  - [Does Foundry Have SPLs Too?](#does-foundry-have-spls-too)
 - [Part 6: Agent Tools — Network Support Matrix](#part-6-agent-tools--network-support-matrix)
 - [Part 7: Feature Limitations with Network Isolation](#part-7-feature-limitations-with-network-isolation)
 - [Part 8: Known Limitations](#part-8-known-limitations)
@@ -492,7 +493,43 @@ On the AI Search Networking page → **Shared private access** tab, you can crea
 
 ![AI Search Shared Private Access](images/ai-search-shared-private-access.jpeg)
 
-**What this does:** AI Search indexers and vectorizers need to read data from Storage, call embedding models on AI Services, write to knowledge stores, etc. When those target resources have public access disabled, AI Search can't reach them — unless it has a private connection. Shared Private Access creates a **private endpoint managed by Microsoft** (inside Microsoft's infrastructure, not your VNet) that connects AI Search to a specific target resource.
+#### What is a Shared Private Link (SPL)?
+
+A Shared Private Link is a **private endpoint that a PaaS service creates inside Microsoft's own managed infrastructure** — not in your VNet. It solves a specific problem: how does a fully managed service (like AI Search) reach another locked-down resource when it doesn't live in your virtual network?
+
+**The key difference from a regular Private Endpoint:**
+
+| | Private Endpoint (PE) | Shared Private Link (SPL) |
+|---|---|---|
+| **Created by** | You, in your VNet | The Azure service (e.g., AI Search), in Microsoft's infrastructure |
+| **Lives in** | Your subnet (`pe-subnet`) | Microsoft-managed network — invisible to you |
+| **Shows up in your VNet?** | Yes — you see the NIC, the IP | No — it's entirely hidden |
+| **Traffic path** | Your VNet → PE → target resource | Azure service → Azure backbone → target resource |
+| **Visible in your firewall logs?** | Yes (if routed through firewall) | No — never touches your VNet |
+| **You manage it?** | Fully | You create/delete the link; Microsoft manages the endpoint |
+| **Approval required?** | You approve on the target resource | Same — target resource owner must approve |
+| **Use case** | Your apps/VMs/agents reaching a resource | An Azure PaaS service reaching another resource on your behalf |
+
+**Think of it this way:** You have Private Endpoints in your VNet so *your* agents can reach AI Search, Storage, etc. But AI Search itself also needs to reach Storage and AI Services — and AI Search doesn't live in your VNet. SPLs give AI Search its *own* private connection to those resources, running entirely on the Azure backbone.
+
+```
+YOUR VNET                                    MICROSOFT-MANAGED
+┌─────────────────────┐                      ┌─────────────────────┐
+│ pe-subnet           │                      │ (invisible to you)  │
+│  PE ─────────────────────► AI Search ─────── SPL ──► Storage     │
+│  PE ─────────────────────► Storage         │ SPL ──► AI Services │
+│  PE ─────────────────────► AI Services     │ SPL ──► AI Services │
+│  PE ─────────────────────► CosmosDB        │ SPL ──► AI Services │
+└─────────────────────┘                      └─────────────────────┘
+  You created these                           AI Search created these
+  They live in YOUR subnet                    They live in MICROSOFT's infra
+```
+
+> **Note:** SPLs are not unique to AI Search. Other Azure PaaS services also support them — see [Does Foundry Have SPLs Too?](#does-foundry-have-spls-too) below.
+
+#### What this does
+
+AI Search indexers and vectorizers need to read data from Storage, call embedding models on AI Services, write to knowledge stores, etc. When those target resources have public access disabled, AI Search can't reach them — unless it has a private connection. Shared Private Access creates a **private endpoint managed by Microsoft** (inside Microsoft's infrastructure, not your VNet) that connects AI Search to a specific target resource.
 
 **In a typical private Foundry deployment, you need these SPLs:**
 
@@ -554,6 +591,30 @@ In a full enterprise lockdown (Template 15 / hub-spoke), here's the recommendati
 - The indexer literally cannot reach the blob storage or embedding model endpoint
 
 > **Note:** Azure AI Search is *also* on the trusted services list of **other** Azure resources. For example, you can use the trusted service exception to let [AI Search connect to Azure Storage as a trusted service](https://learn.microsoft.com/en-us/azure/search/search-indexer-howto-access-trusted-service-exception). However, this only works for **blob and ADLS Gen2** on Azure Storage, and only with a **system-assigned managed identity**. In a fully private deployment with SPLs, you don't need this — the SPL already provides the private connection.
+
+### Does Foundry Have SPLs Too?
+
+**Yes — but only when using Managed VNet (Option C), and they're called "outbound rules" or "managed private endpoints" instead of SPLs.**
+
+The concept is identical: Foundry (like AI Search) is a managed PaaS service that needs to reach your locked-down resources. Depending on which networking option you chose, the mechanism differs:
+
+| Networking Option | How Foundry reaches your resources | SPL-like mechanism? |
+|---|---|---|
+| **Option B: BYO VNet Injection** | Agents run **in your subnet** — they use your VNet's Private Endpoints directly | **No SPLs needed.** Agents are already in your network. |
+| **Option C: Managed VNet** | Agents run in a **Microsoft-managed VNet** — Foundry creates managed private endpoints to reach your resources | **Yes — these are Foundry's equivalent of SPLs.** You configure them as "outbound rules" on the Managed VNet. |
+
+**In a BYO VNet deployment (Option B / Template 15):**
+- Your agents run in the `agent-subnet` of your spoke VNet
+- They reach Storage, AI Search, CosmosDB, AI Services via the Private Endpoints in your `pe-subnet`
+- No SPLs needed on Foundry — the agents *are* in your network
+
+**In a Managed VNet deployment (Option C):**
+- Your agents run in a Microsoft-managed VNet (invisible to you)
+- Foundry creates **managed private endpoints** (outbound rules) from its managed VNet to your resources
+- These are functionally the same as AI Search's SPLs — a private endpoint inside Microsoft's infrastructure, approved by the target resource owner
+- You configure them in Portal → Foundry account → Networking → Managed VNet → Outbound rules
+
+**Summary:** SPL is a general Azure pattern — any PaaS service that runs in Microsoft-managed infrastructure and needs to reach your locked-down resources will use some form of managed private endpoint. AI Search calls them "Shared Private Links." Foundry's Managed VNet calls them "outbound rules." The mechanism is the same.
 
 ---
 
