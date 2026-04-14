@@ -51,7 +51,6 @@ resource existingVNet 'Microsoft.Network/virtualNetworks@2024-05-01' existing = 
 resource routeTable 'Microsoft.Network/routeTables@2024-05-01' = if (!empty(firewallPrivateIp)) {
   name: '${vnetName}-agent-udr'
   location: resourceGroup().location
-  scope: resourceGroup(vnetResourceGroupName)
   properties: {
     disableBgpRoutePropagation: false
     routes: [

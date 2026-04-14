@@ -14,8 +14,8 @@ resource cosmosAccount 'Microsoft.DocumentDB/databaseAccounts@2024-12-01-preview
 }
 
 var roleDefinitionId = resourceId(
-  'Microsoft.DocumentDB/databaseAccounts/sqlRoleDefinitions'
-  cosmosAccountName
+  'Microsoft.DocumentDB/databaseAccounts/sqlRoleDefinitions',
+  cosmosAccountName,
   '00000000-0000-0000-0000-000000000002'
 )
 

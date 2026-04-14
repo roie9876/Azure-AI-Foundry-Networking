@@ -2,6 +2,10 @@
 
 > **Updated April 2026** — Covers all networking options for Microsoft Foundry (formerly Azure AI Foundry), including Private Link, Managed VNet, BYO VNet injection, and Network Security Perimeter.
 
+[![Deploy To Azure](https://raw.githubusercontent.com/Azure/azure-quickstart-templates/master/1-CONTRIBUTION-GUIDE/images/deploytoazure.svg?sanitize=true)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Froie9876%2FAzure-AI-Foundry-Networking%2Frefs%2Fheads%2Fmain%2Fbicep%2Fazuredeploy.json)
+
+> **Modified Template 15** — This repo includes a copy of the [official Microsoft Foundry Template 15](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/15-private-network-standard-agent-setup) with added support for **UDR (route all traffic through Azure Firewall)** and **private subnets** (`defaultOutboundAccess: false`). Set the `firewallPrivateIp` parameter to your firewall's private IP to enable deny-all egress control.
+
 ---
 
 ## Table of Contents
