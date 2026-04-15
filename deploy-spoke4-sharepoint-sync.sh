@@ -130,20 +130,16 @@ echo ""
 
 ###############################################################################
 # 2. Create Blob Container for SharePoint sync in existing Storage
+#    NOTE: Uses ARM management plane API (not data plane) because enterprise
+#    policy enforces allowSharedKeyAccess=false and storage is private.
 ###############################################################################
 echo "──── Creating Blob Container ────"
 
-# Get storage key (via private endpoint, should work from within VNet or CLI)
-STORAGE_KEY=$(az storage account keys list \
-  --account-name "$STORAGE_NAME" \
-  --resource-group "$SPOKE_RG" \
-  --query '[0].value' -o tsv)
+STORAGE_ID=$(az storage account show --name "$STORAGE_NAME" --resource-group "$SPOKE_RG" --query id -o tsv)
 
-az storage container create \
-  --name "$BLOB_CONTAINER_NAME" \
-  --account-name "$STORAGE_NAME" \
-  --account-key "$STORAGE_KEY" \
-  --auth-mode key \
+az rest --method PUT \
+  --url "https://management.azure.com${STORAGE_ID}/blobServices/default/containers/${BLOB_CONTAINER_NAME}?api-version=2023-05-01" \
+  --body '{"properties":{}}' \
   --output none 2>/dev/null || echo "  (container may already exist)"
 
 echo "  ✅ Container: $BLOB_CONTAINER_NAME in $STORAGE_NAME"
@@ -474,7 +470,7 @@ echo ""
 echo "──── Creating Shared Private Link (AI Search → Storage) ────"
 
 az rest --method PUT \
-  --url "https://management.azure.com/subscriptions/$SUBSCRIPTION/resourceGroups/$SPOKE_RG/providers/Microsoft.Search/searchServices/$AI_SEARCH_NAME/sharedPrivateLinkResources/spl-storage-blob?api-version=2024-06-01-preview" \
+  --url "https://management.azure.com/subscriptions/$SUBSCRIPTION/resourceGroups/$SPOKE_RG/providers/Microsoft.Search/searchServices/$AI_SEARCH_NAME/sharedPrivateLinkResources/spl-storage-blob?api-version=2024-07-01" \
   --body "{
     \"properties\": {
       \"privateLinkResourceId\": \"$STORAGE_ID\",
@@ -525,7 +521,7 @@ echo "  Waiting for data plane to become accessible..."
 sleep 15
 
 # Create index
-curl -s -X PUT "${SEARCH_ENDPOINT}/indexes/sharepoint-index?api-version=2024-06-01-preview" \
+curl -s -X PUT "${SEARCH_ENDPOINT}/indexes/sharepoint-index?api-version=2024-07-01" \
   -H "Content-Type: application/json" \
   -H "api-key: $SEARCH_KEY" \
   -d '{
@@ -552,7 +548,7 @@ echo "  ✅ Index: sharepoint-index"
 STORAGE_RESOURCE_ID="/subscriptions/$SUBSCRIPTION/resourceGroups/$SPOKE_RG/providers/Microsoft.Storage/storageAccounts/$STORAGE_NAME"
 STORAGE_CONN="ResourceId=${STORAGE_RESOURCE_ID};"
 
-curl -s -X PUT "${SEARCH_ENDPOINT}/datasources/sharepoint-blob-ds?api-version=2024-06-01-preview" \
+curl -s -X PUT "${SEARCH_ENDPOINT}/datasources/sharepoint-blob-ds?api-version=2024-07-01" \
   -H "Content-Type: application/json" \
   -H "api-key: $SEARCH_KEY" \
   -d "{
@@ -569,7 +565,7 @@ echo "  ✅ Data Source: sharepoint-blob-ds → $BLOB_CONTAINER_NAME"
 ###############################################################################
 echo "──── Creating AI Search Indexer ────"
 
-curl -s -X PUT "${SEARCH_ENDPOINT}/indexers/sharepoint-blob-indexer?api-version=2024-06-01-preview" \
+curl -s -X PUT "${SEARCH_ENDPOINT}/indexers/sharepoint-blob-indexer?api-version=2024-07-01" \
   -H "Content-Type: application/json" \
   -H "api-key: $SEARCH_KEY" \
   -d '{
@@ -710,7 +706,7 @@ echo "   1. Approve the Shared Private Link if auto-approve failed:"
 echo "      Portal → $STORAGE_NAME → Networking → Private endpoint connections"
 echo "   2. Trigger initial sync: run the Function manually in portal"
 echo "   3. After blobs appear, run indexer:"
-echo "      POST ${SEARCH_ENDPOINT}/indexers/sharepoint-blob-indexer/run?api-version=2024-06-01-preview"
+echo "      POST ${SEARCH_ENDPOINT}/indexers/sharepoint-blob-indexer/run?api-version=2024-07-01"
 echo ""
 echo " Key Vault secrets (in $KV_NAME):"
 echo "   sp-client-id       ← SPN application (client) ID"
