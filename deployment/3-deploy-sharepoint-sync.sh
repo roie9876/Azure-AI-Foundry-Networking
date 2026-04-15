@@ -714,13 +714,22 @@ curl -sf -X PUT "${SEARCH_ENDPOINT}/datasources/${DS}?api-version=${API_VER}" \
 echo "  ✅ Data Source: ${DS} (managed identity, soft-delete detection)"
 
 # --- Skillset (OCR + merge + chunking + Azure OpenAI embeddings) ---
+# Attach AI Services to avoid the free-tier 20-document limit
+AI_SERVICES_KEY=$(az cognitiveservices account keys list \
+  --name "$AI_SERVICES_NAME" --resource-group "$SPOKE_RG" \
+  --query key1 -o tsv)
+
 curl -sf -X PUT "${SEARCH_ENDPOINT}/skillsets/${SS}?api-version=${API_VER}" \
   -H "Content-Type: application/json" \
   -H "api-key: $SEARCH_KEY" \
   -d '{
   "name": "'"${SS}"'",
   "description": "Skillset with OCR, text chunking, and Azure OpenAI embeddings via Foundry",
-  "cognitiveServices": null,
+  "cognitiveServices": {
+    "@odata.type": "#Microsoft.Azure.Search.CognitiveServicesByKey",
+    "key": "'"${AI_SERVICES_KEY}"'",
+    "subdomainUrl": "'"${OPENAI_URI}"'"
+  },
   "skills": [
     {
       "@odata.type": "#Microsoft.Skills.Vision.OcrSkill",
