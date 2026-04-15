@@ -7,15 +7,18 @@ set -euo pipefail
 # Deploys on top of an existing hub-spoke + Foundry environment:
 #   1. Creates func-subnet with VNet integration delegation
 #   2. Creates a Blob container for SharePoint sync in existing storage
-#   3. Deploys Azure Function App (Elastic Premium, Python, VNet-integrated)
-#   4. Locks down Function App storage (private endpoints)
-#   5. Deploys Key Vault (private) with SPN secrets
-#   6. Configures Function App settings (KV refs + AI Search + OpenAI)
-#   7. Grants RBAC: Function App → Storage, Key Vault
-#   8. Creates Shared Private Link: AI Search → Storage (blob indexer)
-#   9. Creates AI Search index, data source, and indexer (blob-based)
-#  10. Adds firewall rules for Graph API + SharePoint + Entra ID
-#  11. Clones sync code and publishes to Function App
+#   3. Creates Function App storage (with pre-created file share)
+#   4. Deploys Azure Function App (Elastic Premium, Python, VNet-integrated)
+#   5. Locks down Function App storage (private endpoints: blob+file+queue+table)
+#      + Links private DNS zones to spoke VNet
+#   6. Deploys Key Vault (private) with SPN secrets
+#   7. Configures Function App settings (KV refs + AI Search + OpenAI)
+#   8. Grants RBAC: Function App → Storage, Key Vault
+#   9. Creates Shared Private Links: AI Search → Storage + AI Services
+#  10. Grants RBAC: AI Search → AI Services (for embedding/OCR skills)
+#  11. Creates AI Search vector index, data source, skillset, and indexer
+#  12. Adds firewall rules for Graph API + SharePoint + Entra ID
+#  13. Clones sync code and publishes to Function App (zip + Oryx remote build)
 #
 # Based on: https://github.com/Azure-Samples/sharepoint-foundryIQ-secure-sync
 # Credit: Sidali Kadouche (@sidkadouc)
@@ -80,7 +83,7 @@ SP_SITE_URL="$SHAREPOINT_SITE_URL"
 
 # Generated resource names
 FUNC_SUBNET_NAME="func-subnet"
-FUNC_SUBNET_PREFIX="10.100.6.0/24"
+FUNC_SUBNET_PREFIX="${FUNC_SUBNET_PREFIX:-10.230.4.0/24}"
 FUNC_APP_NAME="sp-sync-func-$(openssl rand -hex 3)"
 FUNC_PLAN_NAME="${FUNC_APP_NAME}-plan"
 FUNC_STORAGE_NAME="fnstor$(openssl rand -hex 4)"
@@ -298,7 +301,64 @@ az network private-endpoint dns-zone-group create \
   --zone-name "privatelink-file-core-windows-net" \
   --output none
 
-echo "  ✅ Function Storage locked down (blob + file PEs)"
+# Queue PE (Functions need queues for AzureWebJobs triggers)
+az network private-endpoint create \
+  --name "pe-${FUNC_STORAGE_NAME}-queue" \
+  --resource-group "$SPOKE_RG" \
+  --vnet-name "$SPOKE_VNET_NAME" \
+  --subnet "$SPOKE_PE_SUBNET_NAME" \
+  --private-connection-resource-id "$FUNC_STORAGE_ID" \
+  --group-id queue \
+  --connection-name "pe-${FUNC_STORAGE_NAME}-queue-conn" \
+  --location "$LOCATION" \
+  --output none
+
+az network private-endpoint dns-zone-group create \
+  --resource-group "$SPOKE_RG" \
+  --endpoint-name "pe-${FUNC_STORAGE_NAME}-queue" \
+  --name "default" \
+  --private-dns-zone "/subscriptions/$SUBSCRIPTION/resourceGroups/$HUB_RG/providers/Microsoft.Network/privateDnsZones/privatelink.queue.core.windows.net" \
+  --zone-name "privatelink-queue-core-windows-net" \
+  --output none
+
+# Table PE (Functions need tables for AzureWebJobs lease management)
+az network private-endpoint create \
+  --name "pe-${FUNC_STORAGE_NAME}-table" \
+  --resource-group "$SPOKE_RG" \
+  --vnet-name "$SPOKE_VNET_NAME" \
+  --subnet "$SPOKE_PE_SUBNET_NAME" \
+  --private-connection-resource-id "$FUNC_STORAGE_ID" \
+  --group-id table \
+  --connection-name "pe-${FUNC_STORAGE_NAME}-table-conn" \
+  --location "$LOCATION" \
+  --output none
+
+az network private-endpoint dns-zone-group create \
+  --resource-group "$SPOKE_RG" \
+  --endpoint-name "pe-${FUNC_STORAGE_NAME}-table" \
+  --name "default" \
+  --private-dns-zone "/subscriptions/$SUBSCRIPTION/resourceGroups/$HUB_RG/providers/Microsoft.Network/privateDnsZones/privatelink.table.core.windows.net" \
+  --zone-name "privatelink-table-core-windows-net" \
+  --output none
+
+echo "  ✅ Function Storage locked down (blob + file + queue + table PEs)"
+
+# Link private DNS zones to the spoke VNet (required for PE name resolution)
+SPOKE_VNET_ID="/subscriptions/$SUBSCRIPTION/resourceGroups/$SPOKE_RG/providers/Microsoft.Network/virtualNetworks/$SPOKE_VNET_NAME"
+DNS_LINK_NAME="spoke-sync-link"
+for ZONE in privatelink.blob.core.windows.net privatelink.file.core.windows.net \
+            privatelink.queue.core.windows.net privatelink.table.core.windows.net \
+            privatelink.vaultcore.azure.net privatelink.search.windows.net \
+            privatelink.cognitiveservices.azure.com privatelink.openai.azure.com; do
+  az network private-dns link vnet create \
+    --name "$DNS_LINK_NAME" \
+    --zone-name "$ZONE" \
+    --resource-group "$HUB_RG" \
+    --virtual-network "$SPOKE_VNET_ID" \
+    --registration-enabled false \
+    -o none 2>/dev/null || true
+done
+echo "  ✅ Private DNS zones linked to $SPOKE_VNET_NAME"
 echo ""
 
 ###############################################################################
@@ -477,12 +537,86 @@ else
 fi
 echo ""
 
+# --- Shared Private Link: AI Search → AI Services (for OCR + embeddings) ---
+AI_SERVICES_NAME=$(echo "$OPENAI_RESOURCE_URI" | sed -E 's|https://([^.]+)\..*|\1|')
+AI_SERVICES_ID=$(az cognitiveservices account show --name "$AI_SERVICES_NAME" \
+  --resource-group "$SPOKE_RG" --query id -o tsv)
+
+# OpenAI SPL (for embedding skill)
+az rest --method PUT \
+  --url "https://management.azure.com/subscriptions/$SUBSCRIPTION/resourceGroups/$SPOKE_RG/providers/Microsoft.Search/searchServices/$AI_SEARCH_NAME/sharedPrivateLinkResources/spl-openai?api-version=2024-07-01" \
+  --body "{
+    \"properties\": {
+      \"privateLinkResourceId\": \"$AI_SERVICES_ID\",
+      \"groupId\": \"openai_account\",
+      \"requestMessage\": \"AI Search skillset needs access to OpenAI embeddings\"
+    }
+  }" \
+  --output none
+
+# Cognitive Services SPL (for OCR skill)
+az rest --method PUT \
+  --url "https://management.azure.com/subscriptions/$SUBSCRIPTION/resourceGroups/$SPOKE_RG/providers/Microsoft.Search/searchServices/$AI_SEARCH_NAME/sharedPrivateLinkResources/spl-cognitive?api-version=2024-07-01" \
+  --body "{
+    \"properties\": {
+      \"privateLinkResourceId\": \"$AI_SERVICES_ID\",
+      \"groupId\": \"cognitiveservices_account\",
+      \"requestMessage\": \"AI Search skillset needs access to Cognitive Services (OCR)\"
+    }
+  }" \
+  --output none
+
+echo "  ⏳ AI Services SPLs created. Waiting 60s for provisioning..."
+sleep 60
+
+# Auto-approve AI Services PE connections
+for PE_CONN_ID in $(az network private-endpoint-connection list \
+  --id "$AI_SERVICES_ID" \
+  --query "[?properties.privateLinkServiceConnectionState.status=='Pending'].id" -o tsv 2>/dev/null); do
+  az network private-endpoint-connection approve \
+    --id "$PE_CONN_ID" \
+    --description "Approved for AI Search skillset" \
+    --output none 2>/dev/null || true
+done
+echo "  ✅ Shared Private Links: AI Search → AI Services (OpenAI + Cognitive)"
+echo ""
+
 ###############################################################################
-# 10. AI Search Index, Data Source, Indexer
+# 10. RBAC: AI Search → AI Services (for embedding/OCR skills)
 ###############################################################################
-echo "──── Step 10: Creating AI Search Artifacts ────"
+echo "──── Step 10: RBAC — AI Search → AI Services ────"
+
+SEARCH_IDENTITY=$(az search service show --name "$AI_SEARCH_NAME" --resource-group "$SPOKE_RG" \
+  --query "identity.principalId" -o tsv)
+# AI_SERVICES_NAME and AI_SERVICES_ID already set in Step 9
+
+for ROLE in "Cognitive Services OpenAI User" "Cognitive Services User"; do
+  az role assignment create \
+    --assignee-object-id "$SEARCH_IDENTITY" \
+    --assignee-principal-type ServicePrincipal \
+    --role "$ROLE" \
+    --scope "$AI_SERVICES_ID" \
+    --output none 2>/dev/null || true
+  echo "  ✅ AI Search → $ROLE"
+done
+echo ""
+
+###############################################################################
+# 11. AI Search: Vector Index, Data Source, Skillset, Indexer
+#     (matches original repo: Azure-Samples/sharepoint-foundryIQ-secure-sync)
+###############################################################################
+echo "──── Step 11: Creating AI Search Artifacts (full pipeline) ────"
 
 SEARCH_ENDPOINT="https://${AI_SEARCH_NAME}.search.windows.net"
+IDX="${INDEX_NAME:-sharepoint-index}"
+DS="${DATASOURCE_NAME:-sharepoint-blob-ds}"
+SS="${SKILLSET_NAME:-sharepoint-sync-skillset}"
+IDXR="${INDEXER_NAME:-sharepoint-blob-indexer}"
+OPENAI_URI="${OPENAI_RESOURCE_URI}"
+EMB_DEPLOY="${EMBEDDING_DEPLOYMENT_ID}"
+EMB_MODEL="${EMBEDDING_MODEL_NAME}"
+EMB_DIM="${EMBEDDING_DIMENSIONS}"
+API_VER="2024-07-01"
 
 # Temporarily enable public access (required to create data-plane objects)
 echo "  Temporarily enabling AI Search public access..."
@@ -490,69 +624,208 @@ az search service update --name "$AI_SEARCH_NAME" --resource-group "$SPOKE_RG" \
   --public-access enabled --output none
 sleep 15
 
-# Index
-curl -s -X PUT "${SEARCH_ENDPOINT}/indexes/${INDEX_NAME:-sharepoint-index}?api-version=2024-07-01" \
+# --- Delete old artifacts if they exist (clean slate) ---
+echo "  Cleaning up old artifacts..."
+curl -s -X DELETE "${SEARCH_ENDPOINT}/indexers/${IDXR}?api-version=${API_VER}" \
+  -H "api-key: $SEARCH_KEY" > /dev/null 2>&1 || true
+curl -s -X DELETE "${SEARCH_ENDPOINT}/skillsets/${SS}?api-version=${API_VER}" \
+  -H "api-key: $SEARCH_KEY" > /dev/null 2>&1 || true
+curl -s -X DELETE "${SEARCH_ENDPOINT}/indexes/${IDX}?api-version=${API_VER}" \
+  -H "api-key: $SEARCH_KEY" > /dev/null 2>&1 || true
+curl -s -X DELETE "${SEARCH_ENDPOINT}/datasources/${DS}?api-version=${API_VER}" \
+  -H "api-key: $SEARCH_KEY" > /dev/null 2>&1 || true
+sleep 5
+
+# --- Index (vector search + semantic config, from original repo) ---
+curl -sf -X PUT "${SEARCH_ENDPOINT}/indexes/${IDX}?api-version=${API_VER}" \
   -H "Content-Type: application/json" \
   -H "api-key: $SEARCH_KEY" \
   -d '{
-    "name": "'"${INDEX_NAME:-sharepoint-index}"'",
-    "fields": [
-      {"name": "id", "type": "Edm.String", "key": true, "filterable": true},
-      {"name": "content", "type": "Edm.String", "searchable": true, "filterable": false, "sortable": false},
-      {"name": "metadata_storage_path", "type": "Edm.String", "filterable": true, "sortable": true},
-      {"name": "metadata_storage_name", "type": "Edm.String", "searchable": true, "filterable": true, "sortable": true},
-      {"name": "metadata_storage_last_modified", "type": "Edm.DateTimeOffset", "filterable": true, "sortable": true},
-      {"name": "metadata_storage_size", "type": "Edm.Int64", "filterable": true, "sortable": true},
-      {"name": "metadata_storage_content_type", "type": "Edm.String", "filterable": true},
-      {"name": "metadata_content_type", "type": "Edm.String", "filterable": true},
-      {"name": "sp_permissions", "type": "Collection(Edm.String)", "filterable": true, "searchable": false},
-      {"name": "sp_site_url", "type": "Edm.String", "filterable": true},
-      {"name": "sp_item_url", "type": "Edm.String", "filterable": true},
-      {"name": "sp_last_modified_by", "type": "Edm.String", "filterable": true}
-    ]
-  }' > /dev/null
-echo "  ✅ Index: ${INDEX_NAME:-sharepoint-index}"
+  "name": "'"${IDX}"'",
+  "fields": [
+    {"name":"chunk_id","type":"Edm.String","key":true,"searchable":true,"filterable":false,"retrievable":true,"stored":true,"sortable":true,"analyzer":"keyword"},
+    {"name":"acl_user_ids","type":"Edm.String","searchable":true,"filterable":true,"retrievable":true,"stored":true,"sortable":false},
+    {"name":"acl_group_ids","type":"Edm.String","searchable":true,"filterable":true,"retrievable":true,"stored":true,"sortable":false},
+    {"name":"purview_label_name","type":"Edm.String","searchable":false,"filterable":true,"retrievable":true,"stored":true,"facetable":true},
+    {"name":"purview_is_encrypted","type":"Edm.String","searchable":false,"filterable":true,"retrievable":true,"stored":true,"facetable":true},
+    {"name":"purview_protection_status","type":"Edm.String","searchable":false,"filterable":true,"retrievable":true,"stored":true,"facetable":true},
+    {"name":"text_parent_id","type":"Edm.String","searchable":false,"filterable":true,"retrievable":true,"stored":true},
+    {"name":"chunk","type":"Edm.String","searchable":true,"filterable":false,"retrievable":true,"stored":true},
+    {"name":"title","type":"Edm.String","searchable":true,"filterable":false,"retrievable":true,"stored":true},
+    {"name":"text_vector","type":"Collection(Edm.Single)","searchable":true,"filterable":false,"retrievable":true,"stored":true,"dimensions":'"${EMB_DIM}"',"vectorSearchProfile":"'"${IDX}"'-azureOpenAi-text-profile"},
+    {"name":"case_id","type":"Edm.String","searchable":false,"filterable":true,"retrievable":true,"stored":true},
+    {"name":"original_file_name","type":"Edm.String","searchable":true,"filterable":false,"retrievable":true,"stored":true}
+  ],
+  "similarity":{"@odata.type":"#Microsoft.Azure.Search.BM25Similarity"},
+  "semantic":{
+    "defaultConfiguration":"'"${IDX}"'-semantic-configuration",
+    "configurations":[{
+      "name":"'"${IDX}"'-semantic-configuration",
+      "prioritizedFields":{
+        "titleField":{"fieldName":"title"},
+        "prioritizedContentFields":[{"fieldName":"chunk"}],
+        "prioritizedKeywordsFields":[]
+      }
+    }]
+  },
+  "vectorSearch":{
+    "algorithms":[{
+      "name":"'"${IDX}"'-algorithm",
+      "kind":"hnsw",
+      "hnswParameters":{"metric":"cosine","m":4,"efConstruction":400,"efSearch":500}
+    }],
+    "profiles":[{
+      "name":"'"${IDX}"'-azureOpenAi-text-profile",
+      "algorithm":"'"${IDX}"'-algorithm",
+      "vectorizer":"'"${IDX}"'-azureOpenAi-text-vectorizer"
+    }],
+    "vectorizers":[{
+      "name":"'"${IDX}"'-azureOpenAi-text-vectorizer",
+      "kind":"azureOpenAI",
+      "azureOpenAIParameters":{
+        "resourceUri":"'"${OPENAI_URI}"'",
+        "deploymentId":"'"${EMB_DEPLOY}"'",
+        "modelName":"'"${EMB_MODEL}"'"
+      }
+    }],
+    "compressions":[]
+  }
+}' > /dev/null
+echo "  ✅ Index: ${IDX} (vector + semantic)"
 
-# Data Source (ResourceId connection — managed identity, no shared keys)
+# --- Data Source (ResourceId — managed identity, soft-delete detection) ---
 STORAGE_RESOURCE_ID="/subscriptions/$SUBSCRIPTION/resourceGroups/$SPOKE_RG/providers/Microsoft.Storage/storageAccounts/$STORAGE_NAME"
 STORAGE_CONN="ResourceId=${STORAGE_RESOURCE_ID};"
 
-curl -s -X PUT "${SEARCH_ENDPOINT}/datasources/${DATASOURCE_NAME:-sharepoint-blob-ds}?api-version=2024-07-01" \
+curl -sf -X PUT "${SEARCH_ENDPOINT}/datasources/${DS}?api-version=${API_VER}" \
   -H "Content-Type: application/json" \
   -H "api-key: $SEARCH_KEY" \
   -d "{
-    \"name\": \"${DATASOURCE_NAME:-sharepoint-blob-ds}\",
-    \"type\": \"azureblob\",
-    \"credentials\": {\"connectionString\": \"$STORAGE_CONN\"},
-    \"container\": {\"name\": \"$BLOB_CONTAINER_NAME\"}
-  }" > /dev/null
-echo "  ✅ Data Source: ${DATASOURCE_NAME:-sharepoint-blob-ds}"
+  \"name\": \"${DS}\",
+  \"type\": \"azureblob\",
+  \"credentials\": {\"connectionString\": \"${STORAGE_CONN}\"},
+  \"container\": {\"name\": \"${BLOB_CONTAINER_NAME}\"},
+  \"dataDeletionDetectionPolicy\": {
+    \"@odata.type\": \"#Microsoft.Azure.Search.SoftDeleteColumnDeletionDetectionPolicy\",
+    \"softDeleteColumnName\": \"IsDeleted\",
+    \"softDeleteMarkerValue\": \"true\"
+  }
+}" > /dev/null
+echo "  ✅ Data Source: ${DS} (managed identity, soft-delete detection)"
 
-# Indexer (private execution environment, hourly schedule)
-curl -s -X PUT "${SEARCH_ENDPOINT}/indexers/${INDEXER_NAME:-sharepoint-blob-indexer}?api-version=2024-07-01" \
+# --- Skillset (OCR + merge + chunking + Azure OpenAI embeddings) ---
+curl -sf -X PUT "${SEARCH_ENDPOINT}/skillsets/${SS}?api-version=${API_VER}" \
   -H "Content-Type: application/json" \
   -H "api-key: $SEARCH_KEY" \
   -d '{
-    "name": "'"${INDEXER_NAME:-sharepoint-blob-indexer}"'",
-    "dataSourceName": "'"${DATASOURCE_NAME:-sharepoint-blob-ds}"'",
-    "targetIndexName": "'"${INDEX_NAME:-sharepoint-index}"'",
-    "parameters": {
-      "configuration": {
-        "executionEnvironment": "private",
-        "dataToExtract": "contentAndMetadata",
-        "indexedFileNameExtensions": ".pdf,.docx,.doc,.pptx,.ppt,.xlsx,.xls,.txt,.md,.html,.csv,.json,.rtf,.eml,.msg",
-        "failOnUnsupportedContentType": false,
-        "failOnUnprocessableDocument": false,
-        "indexStorageMetadataOnlyForOversizedDocuments": true
-      }
+  "name": "'"${SS}"'",
+  "description": "Skillset with OCR, text chunking, and Azure OpenAI embeddings via Foundry",
+  "cognitiveServices": null,
+  "skills": [
+    {
+      "@odata.type": "#Microsoft.Skills.Vision.OcrSkill",
+      "name": "ocr-skill",
+      "description": "OCR skill to extract text from images",
+      "context": "/document/normalized_images/*",
+      "lineEnding": "Space",
+      "defaultLanguageCode": "en",
+      "detectOrientation": true,
+      "inputs": [{"name":"image","source":"/document/normalized_images/*"}],
+      "outputs": [{"name":"text","targetName":"text"}]
     },
-    "schedule": {"interval": "PT1H"},
-    "fieldMappings": [
-      {"sourceFieldName": "metadata_storage_path", "targetFieldName": "id", "mappingFunction": {"name": "base64Encode"}},
-      {"sourceFieldName": "metadata_storage_path", "targetFieldName": "metadata_storage_path"}
-    ]
-  }' > /dev/null
-echo "  ✅ Indexer: ${INDEXER_NAME:-sharepoint-blob-indexer} (hourly, private execution)"
+    {
+      "@odata.type": "#Microsoft.Skills.Text.MergeSkill",
+      "name": "merge-skill",
+      "description": "Merge OCR text from images with document content",
+      "context": "/document",
+      "insertPreTag": " ",
+      "insertPostTag": " ",
+      "inputs": [
+        {"name":"text","source":"/document/content"},
+        {"name":"itemsToInsert","source":"/document/normalized_images/*/text"},
+        {"name":"offsets","source":"/document/normalized_images/*/contentOffset"}
+      ],
+      "outputs": [{"name":"mergedText","targetName":"mergedText"}]
+    },
+    {
+      "@odata.type": "#Microsoft.Skills.Text.SplitSkill",
+      "name": "split-skill",
+      "description": "Split skill to chunk documents",
+      "context": "/document",
+      "defaultLanguageCode": "en",
+      "textSplitMode": "pages",
+      "maximumPageLength": 2000,
+      "pageOverlapLength": 200,
+      "inputs": [{"name":"text","source":"/document/mergedText"}],
+      "outputs": [{"name":"textItems","targetName":"pages"}]
+    },
+    {
+      "@odata.type": "#Microsoft.Skills.Text.AzureOpenAIEmbeddingSkill",
+      "name": "text-embedding-skill",
+      "description": "Azure OpenAI Embedding skill for text chunks via Foundry",
+      "context": "/document/pages/*",
+      "resourceUri": "'"${OPENAI_URI}"'",
+      "deploymentId": "'"${EMB_DEPLOY}"'",
+      "dimensions": '"${EMB_DIM}"',
+      "modelName": "'"${EMB_MODEL}"'",
+      "inputs": [{"name":"text","source":"/document/pages/*"}],
+      "outputs": [{"name":"embedding","targetName":"text_vector"}]
+    }
+  ],
+  "indexProjections": {
+    "selectors": [{
+      "targetIndexName": "'"${IDX}"'",
+      "parentKeyFieldName": "text_parent_id",
+      "sourceContext": "/document/pages/*",
+      "mappings": [
+        {"name":"text_vector","source":"/document/pages/*/text_vector"},
+        {"name":"chunk","source":"/document/pages/*"},
+        {"name":"title","source":"/document/metadata_storage_name"},
+        {"name":"original_file_name","source":"/document/metadata_storage_name"},
+        {"name":"acl_user_ids","source":"/document/user_ids"},
+        {"name":"acl_group_ids","source":"/document/group_ids"},
+        {"name":"purview_label_name","source":"/document/purview_label_name"},
+        {"name":"purview_is_encrypted","source":"/document/purview_is_encrypted"},
+        {"name":"purview_protection_status","source":"/document/purview_protection_status"}
+      ]
+    }],
+    "parameters": {"projectionMode":"skipIndexingParentDocuments"}
+  }
+}' > /dev/null
+echo "  ✅ Skillset: ${SS} (OCR → merge → chunk → embed)"
+
+# --- Indexer (with skillset, private execution, image extraction) ---
+curl -sf -X PUT "${SEARCH_ENDPOINT}/indexers/${IDXR}?api-version=${API_VER}" \
+  -H "Content-Type: application/json" \
+  -H "api-key: $SEARCH_KEY" \
+  -d '{
+  "name": "'"${IDXR}"'",
+  "dataSourceName": "'"${DS}"'",
+  "skillsetName": "'"${SS}"'",
+  "targetIndexName": "'"${IDX}"'",
+  "parameters": {
+    "maxFailedItems": -1,
+    "maxFailedItemsPerBatch": -1,
+    "configuration": {
+      "executionEnvironment": "private",
+      "dataToExtract": "contentAndMetadata",
+      "imageAction": "generateNormalizedImages",
+      "parsingMode": "default",
+      "indexedFileNameExtensions": ".pdf,.docx,.doc,.pptx,.ppt,.xlsx,.xls,.txt,.md,.html,.csv,.json,.rtf,.eml,.msg",
+      "failOnUnsupportedContentType": false,
+      "failOnUnprocessableDocument": false,
+      "indexStorageMetadataOnlyForOversizedDocuments": true
+    }
+  },
+  "schedule": {"interval": "PT1H"},
+  "fieldMappings": [
+    {"sourceFieldName":"metadata_storage_name","targetFieldName":"title"},
+    {"sourceFieldName":"caseId","targetFieldName":"case_id"},
+    {"sourceFieldName":"originalFileName","targetFieldName":"original_file_name"}
+  ],
+  "outputFieldMappings": []
+}' > /dev/null
+echo "  ✅ Indexer: ${IDXR} (skillset=${SS}, hourly, private execution)"
 
 # Lock down AI Search again
 az search service update --name "$AI_SEARCH_NAME" --resource-group "$SPOKE_RG" \
@@ -561,9 +834,9 @@ echo "  ✅ AI Search locked down"
 echo ""
 
 ###############################################################################
-# 11. Firewall Rules: Graph API + SharePoint + Entra ID
+# 12. Firewall Rules: Graph API + SharePoint + Entra ID
 ###############################################################################
-echo "──── Step 11: Adding Firewall Rules ────"
+echo "──── Step 12: Adding Firewall Rules ────"
 
 # Ensure rule collection group exists
 az network firewall policy rule-collection-group show \
@@ -587,7 +860,7 @@ az network firewall policy rule-collection-group collection add-filter-collectio
   --action Allow \
   --rule-type ApplicationRule \
   --rule-name "SharePointGraph" \
-  --source-addresses "10.100.0.0/16" \
+  --source-addresses "${SPOKE_ADDRESS_SPACE:-10.100.0.0/16}" \
   --protocols Https=443 \
   --target-fqdns "graph.microsoft.com" "login.microsoftonline.com" "*.sharepoint.com" \
   --output none 2>/dev/null || echo "  (rule may already exist)"
@@ -596,9 +869,9 @@ echo "  ✅ Firewall rules: graph.microsoft.com, *.sharepoint.com, login.microso
 echo ""
 
 ###############################################################################
-# 12. Clone & Publish Sync Code
+# 13. Clone & Publish Sync Code
 ###############################################################################
-echo "──── Step 12: Cloning & Publishing Sync Code ────"
+echo "──── Step 13: Cloning & Publishing Sync Code ────"
 
 if [ -d "$SYNC_CLONE_DIR" ]; then
   echo "  Repo already cloned — pulling latest..."
@@ -627,12 +900,29 @@ if [ -z "$FUNC_SRC_DIR" ]; then
 else
   echo "  Publishing from $FUNC_SRC_DIR ..."
   pushd "$FUNC_SRC_DIR" > /dev/null
-  if [ -f "requirements.txt" ]; then
-    pip install -r requirements.txt --quiet 2>/dev/null || true
-  fi
-  func azure functionapp publish "$FUNC_APP_NAME" --python
+
+  # Use zip deploy with Oryx remote build (not local func publish).
+  # Local 'func publish --python' builds native packages for the host arch
+  # (e.g. ARM64 on macOS) which fail on Linux x64 Function Apps.
+  DEPLOY_ZIP="/tmp/func-deploy-$$.zip"
+  zip -r "$DEPLOY_ZIP" . -x ".git/*" "__pycache__/*" ".env" "*.pyc" ".venv/*" > /dev/null
+
+  # Enable Oryx remote build
+  az functionapp config appsettings set \
+    --name "$FUNC_APP_NAME" --resource-group "$SPOKE_RG" \
+    --settings "SCM_DO_BUILD_DURING_DEPLOYMENT=true" "ENABLE_ORYX_BUILD=true" \
+    --output none
+
+  az functionapp deployment source config-zip \
+    --name "$FUNC_APP_NAME" \
+    --resource-group "$SPOKE_RG" \
+    --src "$DEPLOY_ZIP" \
+    --build-remote true \
+    --timeout 600
+
+  rm -f "$DEPLOY_ZIP"
   popd > /dev/null
-  echo "  ✅ Sync code published"
+  echo "  ✅ Sync code published (remote build)"
 fi
 echo ""
 

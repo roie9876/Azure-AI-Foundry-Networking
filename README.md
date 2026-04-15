@@ -40,6 +40,7 @@
 - [Part 13: Hands-On — Deploying Template 15 in a Hub-Spoke Network](#part-13-hands-on--deploying-template-15-in-a-hub-spoke-network)
   - [Firewall Rules Reference](#firewall-rules-reference)
 - [Part 14: SharePoint Online Integration — Secure Sync with Foundry IQ](#part-14-sharepoint-online-integration--secure-sync-with-foundry-iq)
+  - [ACL Enforcement & On-Behalf-Of (OBO)](#acl-enforcement--on-behalf-of-obo--current-gap-and-options)
 
 ---
 
@@ -1237,6 +1238,8 @@ At this point you have a **fully private Foundry agent** that can:
 
 > **Credit:** The SharePoint sync solution is based on [sharepoint-foundryIQ-secure-sync](https://github.com/Azure-Samples/sharepoint-foundryIQ-secure-sync) by **[Sidali Kadouche](https://github.com/sidkadouc)** ([@sidkadouc](https://github.com/sidkadouc)). We adapted it to run within our hub-spoke private network.
 
+![Part 14 — SharePoint Sync Architecture](docs/hub-spoke-foundry-sharepoint-sync.drawio.png)
+
 ### Why Add SharePoint?
 
 After completing Part 13, your Foundry agent can do RAG on files you manually upload to Blob storage. But in most enterprises, the documents live in **SharePoint Online** — not in Azure Blob.
@@ -1287,7 +1290,14 @@ Before deploying, you need:
 
 ### Deploy the SharePoint Sync Layer
 
+> **⚠️ IMPORTANT: Run from inside the VNet!**
+>
+> This script must be executed from a VM or jumpbox **inside the hub-spoke network** (e.g., a VM in the spoke VNet). All Azure services in this deployment have **public network access disabled** — AI Search, Storage, Key Vault, and AI Services are only reachable via private endpoints. Running this script from your local machine or from outside the VNet will fail because the Azure REST API calls (creating indexes, skillsets, indexers, etc.) cannot reach the private endpoints.
+>
+> If you don't have a VM in the VNet yet, deploy one in the spoke's `vm` subnet and SSH into it before running the script.
+
 ```bash
+# SSH into your jumpbox VM inside the VNet first, then:
 cd deployment
 cp sharepoint-sync.env.example sharepoint-sync.env   # Fill in your values
 ./3-deploy-sharepoint-sync.sh
@@ -1361,6 +1371,112 @@ The Function App's managed identity has `Key Vault Secrets User` role — it can
 | Indexer fails: "Unable to retrieve blob container" | SPL not approved or MI missing RBAC | Approve SPL on Storage → Networking. Grant AI Search MI `Storage Blob Data Reader` on Storage |
 | Key Vault secret resolution fails (Function 500s) | KV PE not registered in DNS, or RBAC delay | Check DNS zone link. Wait 5 min for RBAC propagation |
 | Indexer status shows `transientFailure` | Not using private execution environment | Set `"executionEnvironment": "private"` on the indexer |
+
+### ACL Enforcement & On-Behalf-Of (OBO) — Current Gap and Options
+
+#### The Problem
+
+The SharePoint sync pipeline stores per-document ACLs in the AI Search index — fields like `acl_user_ids` and `acl_group_ids` contain the Entra Object IDs of users and groups that have access to each document. However, **Azure AI Foundry agents do NOT enforce these ACLs out of the box**.
+
+When you connect an AI Search index to a Foundry agent as a **Knowledge Source** (via the Foundry portal UI), the agent queries AI Search using **its own managed identity** — not the end user's identity. There is no On-Behalf-Of (OBO) flow. The ACL fields are stored in the index but completely ignored during retrieval.
+
+This means: **every user who talks to the agent sees answers from all documents**, regardless of their SharePoint permissions.
+
+#### Why OBO Doesn't Work Here
+
+```
+What you might expect (OBO):
+  User → Foundry Agent → AI Search (as the user) → filtered by user's ACL ❌
+
+What actually happens:
+  User → Foundry Agent → AI Search (as agent's managed identity) → returns ALL docs ⚠️
+```
+
+The Foundry agent authenticates to AI Search using a connection credential (managed identity or API key). It has no concept of "the current user" when making search queries, and AI Search has no way to know who the original caller is.
+
+#### Option A: Custom Pre-Filtered RAG (Recommended)
+
+Build a custom application layer that intercepts the user's query, filters AI Search results by ACL, and passes only permitted documents to the agent as context. This is the approach used in the [original repo's agent-tool](https://github.com/Azure-Samples/sharepoint-foundryIQ-secure-sync/blob/main/agent-tool/Program.cs).
+
+```
+User (authenticated via Entra ID)
+  │
+  ▼
+Custom App / API (resolves user OID + group memberships via Graph API)
+  │
+  ▼
+AI Search query with ACL filter:
+  search.ismatch('user-oid', 'acl_user_ids') OR search.ismatch('group-id', 'acl_group_ids')
+  │
+  ▼
+Only permitted documents returned
+  │
+  ▼
+Foundry Agent receives filtered docs as context → generates grounded answer
+```
+
+**How it works:**
+1. User authenticates to your app (Entra ID)
+2. App resolves the user's Object ID and group memberships via Microsoft Graph
+3. App queries AI Search with an `$filter` clause that matches the user's OID/groups against `acl_user_ids` / `acl_group_ids`
+4. App passes only the permitted document chunks as context to the Foundry agent
+5. Agent generates an answer grounded only in documents the user is allowed to see
+
+**Key code pattern** (from the original repo):
+```csharp
+// Build ACL filter for the authenticated user
+string aclFilter = string.Join(" or ",
+    userIds.Select(id => $"search.ismatch('{id}', 'acl_user_ids')").Concat(
+    groupIds.Select(id => $"search.ismatch('{id}', 'acl_group_ids')")));
+
+// Query AI Search with the ACL filter applied
+var results = await searchClient.SearchAsync<SearchDocument>(query,
+    new SearchOptions { Filter = aclFilter });
+```
+
+#### Option B: Custom Function Tool on the Agent
+
+Register a custom Azure Function as a **tool** on the Foundry agent. The function receives the user's identity token, resolves their permissions, queries AI Search with the ACL filter, and returns filtered results. The agent calls this tool instead of the built-in Knowledge Source.
+
+```
+User → Foundry Agent → calls "search_documents" tool → Azure Function
+  │                                                        │
+  │                                                        ▼
+  │                                            Validates user token,
+  │                                            queries AI Search with ACL filter,
+  │                                            returns permitted docs only
+  │                                                        │
+  └── Agent generates answer from filtered results ◄───────┘
+```
+
+This approach keeps the agent in Foundry but delegates search to your ACL-aware function.
+
+#### Option C: Wait for Native OBO Support
+
+Microsoft may add native OBO support to Foundry agents in the future, where the agent would pass the user's identity through to AI Search. As of now, this is not available.
+
+#### Testing That ACLs Work in Your Index
+
+Even though the agent doesn't enforce ACLs, you can verify the ACL fields are correctly populated and filterable. Run these from your jumpbox VM inside the VNet:
+
+```bash
+# 1. Get your Entra Object ID
+MY_OID=$(az ad signed-in-user show --query id -o tsv)
+
+# 2. Query docs to see ACL values
+curl -s "https://<search-name>.search.windows.net/indexes/sharepoint-index/docs?api-version=2024-07-01&\$top=3&\$select=title,acl_user_ids,acl_group_ids" \
+  -H "api-key: $SEARCH_KEY" | python3 -m json.tool
+
+# 3. Filter with YOUR OID — should return documents you have access to
+curl -s "https://<search-name>.search.windows.net/indexes/sharepoint-index/docs?api-version=2024-07-01&\$filter=search.ismatch('$MY_OID','acl_user_ids')&\$select=title" \
+  -H "api-key: $SEARCH_KEY" | python3 -m json.tool
+
+# 4. Filter with a FAKE OID — should return 0 results
+curl -s "https://<search-name>.search.windows.net/indexes/sharepoint-index/docs?api-version=2024-07-01&\$filter=search.ismatch('00000000-0000-0000-0000-000000000000','acl_user_ids')&\$select=title" \
+  -H "api-key: $SEARCH_KEY" | python3 -m json.tool
+```
+
+If step 3 returns your documents and step 4 returns zero — your ACLs are stored correctly and ready for enforcement via Option A or B.
 
 ---
 

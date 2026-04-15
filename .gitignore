@@ -9,3 +9,4 @@ __pycache__/
 local.settings.json
 .sharepoint-sync-repo/
 deployment/.sharepoint-sync-repo/
+chat-context.md
