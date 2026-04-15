@@ -1,1 +1,11 @@
 .DS_Store
+.env
+.env.*
+*.env
+!*.env.example
+.delta_tokens/
+__pycache__/
+*.pyc
+local.settings.json
+.sharepoint-sync-repo/
+deployment/.sharepoint-sync-repo/

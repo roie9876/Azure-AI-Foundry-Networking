@@ -37,7 +37,9 @@
 - [Part 11: Troubleshooting](#part-11-troubleshooting)
 - [Part 12: Which Bicep Template Should I Use?](#part-12-which-bicep-template-should-i-use)
 - [References — The Microsoft Docs Map](#references--the-microsoft-docs-map)
-- [Part 13: Hands-On — Deploying Template 15 in a Hub-Spoke Network](#part-8-hands-on--deploying-template-15-in-a-hub-spoke-network)
+- [Part 13: Hands-On — Deploying Template 15 in a Hub-Spoke Network](#part-13-hands-on--deploying-template-15-in-a-hub-spoke-network)
+  - [Firewall Rules Reference](#firewall-rules-reference)
+- [Part 14: SharePoint Online Integration — Secure Sync with Foundry IQ](#part-14-sharepoint-online-integration--secure-sync-with-foundry-iq)
 
 ---
 
@@ -85,7 +87,7 @@ Before talking about network options, you need to understand that Microsoft Foun
 
 Now that you know the components, there are **three directions** of network traffic to secure:
 
-![Plan for Network Isolation](images/plan-network-isolation-diagram.png)
+![Plan for Network Isolation](docs/images/plan-network-isolation-diagram.png)
 
 ### Direction 1: Inbound — Who can reach your Foundry resource?
 
@@ -192,7 +194,7 @@ Now let's explain each one.
 | Azure AI Search | `Microsoft.Search` |
 | Azure Machine Learning | `Microsoft.MachineLearningServices` |
 
-![Foundry Portal Firewall Settings](images/foundry-portal-firewall.png)
+![Foundry Portal Firewall Settings](docs/images/foundry-portal-firewall.png)
 
 ---
 
@@ -204,7 +206,7 @@ Now let's explain each one.
 
 **This is the full enterprise solution.** It's GA (production-ready) and gives you maximum control.
 
-![Private Network Isolation Architecture](images/private-network-isolation.png)
+![Private Network Isolation Architecture](docs/images/private-network-isolation.png)
 
 **What gets deployed in your VNet:**
 
@@ -237,7 +239,7 @@ Now let's explain each one.
 
 **Add a firewall** with hub-and-spoke if you need egress control:
 
-![Hub-and-Spoke Firewall Configuration](images/network-hub-spoke-diagram.png)
+![Hub-and-Spoke Firewall Configuration](docs/images/network-hub-spoke-diagram.png)
 
 ---
 
@@ -249,17 +251,17 @@ Now let's explain each one.
 
 > ⚠️ **This is currently in Preview** — not recommended for production. If your enterprise doesn't allow preview features, use Option B instead.
 
-![Managed VNet Overview](images/diagram-managed-network.png)
+![Managed VNet Overview](docs/images/diagram-managed-network.png)
 
 **Two isolation modes for the managed VNet:**
 
 **Allow Internet Outbound** — Agents can reach any internet destination. Useful for development where agents need to download packages or call external APIs. Azure still manages the VNet and can add private endpoints for Azure services.
 
-![Allow Internet Outbound](images/diagram-allow-internet-outbound.png)
+![Allow Internet Outbound](docs/images/diagram-allow-internet-outbound.png)
 
 **Allow Only Approved Outbound** — Agents can ONLY reach destinations you explicitly approve. Everything else is blocked. You define allowed targets using service tags, FQDNs, or private endpoints. Microsoft creates a managed Azure Firewall automatically.
 
-![Allow Only Approved Outbound](images/diagram-allow-only-approved-outbound.png)
+![Allow Only Approved Outbound](docs/images/diagram-allow-only-approved-outbound.png)
 
 **Managed VNet vs BYO VNet Injection — side by side:**
 
@@ -294,7 +296,7 @@ Now let's explain each one.
 
 > ⚠️ **This is also in Preview.**
 
-![Network Security Perimeter](images/network-security-perimeter-diagram.png)
+![Network Security Perimeter](docs/images/network-security-perimeter-diagram.png)
 
 **How it works:**
 1. Create a Network Security Perimeter in Azure
@@ -463,7 +465,7 @@ On the AI Search Networking page → **Firewalls and virtual networks** tab, the
 
 > ☑ Allow Azure services on the trusted services list to access this search service.
 
-![AI Search Trusted Services Exception](images/ai-search-trusted-services.jpeg)
+![AI Search Trusted Services Exception](docs/images/ai-search-trusted-services.jpeg)
 
 **What this does:** When public access is **Disabled**, nobody can reach AI Search — not even other Azure services. Checking this box creates an exception for specific Azure services that Microsoft considers "trusted." These services can bypass the IP firewall using their **managed identity** instead of a network path.
 
@@ -495,7 +497,7 @@ On the AI Search Networking page → **Firewalls and virtual networks** tab, the
 
 On the AI Search Networking page → **Shared private access** tab, you can create **Shared Private Links (SPLs)** that let AI Search connect to other resources through managed private endpoints.
 
-![AI Search Shared Private Access](images/ai-search-shared-private-access.jpeg)
+![AI Search Shared Private Access](docs/images/ai-search-shared-private-access.jpeg)
 
 #### What is a Shared Private Link (SPL)?
 
@@ -780,15 +782,15 @@ Creating a knowledge source (blob → AI Search → Foundry) in the portal is th
 
 | # | Check | How to verify | Fix |
 |---|-------|--------------|-----|
-| 1 | **API key auth enabled on AI Services** | `az cognitiveservices account show --name <name> -g <rg> --query properties.disableLocalAuth` → should be `false` | See section 7.5 above |
-| 2 | **AI Services has RBAC on Storage** | Check AI Services MI has `Storage Blob Data Contributor` on storage account | Assign role (section 7.2) |
-| 3 | **AI Services has RBAC on AI Search** | Check AI Services MI has `Search Index Data Contributor` + `Search Service Contributor` on AI Search | Assign roles (section 7.2) |
-| 4 | **SPL: AI Search → Blob Storage** | `az search shared-private-link-resource list` — should show `blob` with `Approved` status | Create SPL (section 7.3) |
-| 5 | **SPL: AI Search → Foundry Account** | Same command — should show `foundry_account` with `Approved` status | Create SPL (section 7.3) |
-| 6 | **SPL: AI Search → OpenAI Account** | Same command — should show `openai_account` with `Approved` status | Create SPL (section 7.3) |
-| 7 | **SPL: AI Search → Cognitive Account** | Same command — should show `cognitiveservices_account` with `Approved` status | Create SPL (section 7.3) |
-| 6 | **Indexer execution environment** | Check indexer JSON has `"executionEnvironment": "Private"` | Set it (section 7.4) |
-| 7 | **Semantic search enabled** | `az search service show --query properties.semanticSearch` — should be `free` or `standard` | Enable it (section 7.6) |
+| 1 | **API key auth enabled on AI Services** | `az cognitiveservices account show --name <name> -g <rg> --query properties.disableLocalAuth` → should be `false` | See Part 13 Step 4.5 |
+| 2 | **AI Services has RBAC on Storage** | Check AI Services MI has `Storage Blob Data Contributor` on storage account | See Part 13 Step 4.2 |
+| 3 | **AI Services has RBAC on AI Search** | Check AI Services MI has `Search Index Data Contributor` + `Search Service Contributor` on AI Search | See Part 13 Step 4.2 |
+| 4 | **SPL: AI Search → Blob Storage** | `az search shared-private-link-resource list` — should show `blob` with `Approved` status | See Part 13 Step 4.3 |
+| 5 | **SPL: AI Search → Foundry Account** | Same command — should show `foundry_account` with `Approved` status | See Part 13 Step 4.3 |
+| 6 | **SPL: AI Search → OpenAI Account** | Same command — should show `openai_account` with `Approved` status | See Part 13 Step 4.3 |
+| 7 | **SPL: AI Search → Cognitive Account** | Same command — should show `cognitiveservices_account` with `Approved` status | See Part 13 Step 4.3 |
+| 8 | **Indexer execution environment** | Check indexer JSON has `"executionEnvironment": "Private"` | See Part 13 Step 4.4 |
+| 9 | **Semantic search enabled** | `az search service show --query properties.semanticSearch` — should be `free` or `standard` | See Part 13 Step 4.6 |
 | 8 | **AI Search bypass** | `az search service show --query networkRuleSet.bypass` — consider `"AzurePortal"` for portal operations | Set bypass via REST API |
 
 > **Tip:** Check the Azure Activity Log for the actual error details — the portal's generic "Failed to create knowledge source" message hides the real cause:
@@ -932,152 +934,218 @@ Here's where each doc fits (so you don't get lost again):
 
 ---
 
-## Part 8: Hands-On — Deploying Template 15 in a Hub-Spoke Network
+## Part 13: Hands-On — Deploying Template 15 in a Hub-Spoke Network
 
-This section walks through a real deployment of **Template 15** (private network standard agent setup) into an existing hub-spoke topology with Azure Firewall.
+This section walks through a complete, production-ready deployment of **Template 15** (private network standard agent setup) into a hub-spoke topology with Azure Firewall. All egress traffic is forced through the firewall for inspection and control.
+
+### Repository Structure
+
+This repo is organized for a **modular, step-by-step deployment**:
+
+```
+deployment/
+  1-deploy-hub.sh                 # Step 1: Hub infrastructure
+  2-deploy-spoke.sh               # Step 2: Spoke networking
+  3-deploy-sharepoint-sync.sh     # Step 4: SharePoint sync layer (Part 14)
+  hub.env.example                 # Hub configuration template
+  spoke.env.example               # Spoke configuration template
+  sharepoint-sync.env.example     # SharePoint sync configuration template
+
+bicep/                            # Step 3: Modified Template 15
+  main.bicep                      #   Added: UDR support + private subnets
+  main.bicepparam                 #   Parameter file
+  azuredeploy.json                #   Compiled ARM template
+  modules-network-secured/        #   Bicep modules
+```
+
+**Deployment order:**
+
+```
+1-deploy-hub.sh → 2-deploy-spoke.sh → Bicep (Template 15) → 3-deploy-sharepoint-sync.sh
+     Hub              Spoke             Foundry               SharePoint (Part 14)
+```
 
 ### The Scenario
 
-We have an existing hub-spoke network and want to deploy a fully private AI Foundry agent:
+You want a fully private AI Foundry agent deployment with enterprise-grade network controls:
 
-- **Hub VNet** (`10.0.0.0/16`) — Azure Firewall at `10.0.0.4`, DNS proxy enabled
-- **Spoke VNet** (`foundry-vnet`, `10.100.0.0/16`) — peered to hub, with UDR routing `0.0.0.0/0` → Firewall
-- **Azure Bastion** + test VM for private access
-- **Goal**: Deploy AI Foundry Agent Service with all PaaS endpoints private, integrated with existing network
+- **Hub VNet** (`10.0.0.0/16`) — Azure Firewall, Private DNS Zones, Log Analytics
+- **Spoke VNet** (`10.100.0.0/16`) — peered to hub, UDR routing `0.0.0.0/0` → Firewall
+- **All PaaS endpoints private** — Foundry, AI Search, Storage, Cosmos DB behind private endpoints
+- **Firewall controls all egress** — only whitelisted FQDNs allowed out
+- (Optional) **SharePoint Online sync** — enterprise documents indexed for RAG via Foundry IQ
 
 ### Architecture Diagram
 
-![Hub-Spoke Foundry Private Network](hub-spoke-foundry-private.drawio.png)
+![Hub-Spoke Foundry Private Network](docs/hub-spoke-foundry-private.drawio.png)
 
 ```
-┌─────────────────────┐      VNet Peering      ┌────────────────────────────────────────┐
-│  Hub VNet           │◄──────────────────────►│  Spoke VNet (foundry-vnet)              │
-│  10.0.0.0/16        │                        │  10.100.0.0/16                          │
-│                     │                        │                                          │
-│  ┌───────────────┐  │                        │  ┌────────────┐  ┌───────────────────┐  │
-│  │ Azure Firewall│  │                        │  │ Bastion    │  │ test-vm subnet    │  │
-│  │ 10.0.0.4      │  │                        │  │ .1.0/26    │  │ .2.0/24           │  │
-│  └───────────────┘  │                        │  └────────────┘  └───────────────────┘  │
-│                     │                        │                                          │
-│  UDR: 0/0 → FW     │                        │  ┌────────────────────────────────────┐  │
-└─────────────────────┘                        │  │ agent-subnet  .3.0/24             │  │
-         │                                     │  │ delegated: Microsoft.App/envs      │  │
-         ▼                                     │  │ (AI Agent Service compute)         │  │
-    ┌─────────┐                                │  └────────────────────────────────────┘  │
-    │ Internet│                                │                                          │
-    └─────────┘                                │  ┌────────────────────────────────────┐  │
-                                               │  │ pe-subnet  .4.0/24                │  │
-                                               │  │ PEs: Foundry, Search, Storage,    │  │
-                                               │  │      Cosmos DB, Blob, File        │  │
-                                               │  └────────────────────────────────────┘  │
-                                               └────────────────────────────────────────┘
+┌──────────────────────────┐     VNet Peering     ┌──────────────────────────────────────┐
+│  Hub VNet (10.0.0.0/16)  │◄───────────────────►│  Spoke VNet (10.100.0.0/16)           │
+│                          │                      │                                        │
+│  ┌────────────────────┐  │                      │  ┌─────────────────────────────────┐  │
+│  │ Azure Firewall     │  │                      │  │ agent-subnet    10.100.3.0/24   │  │
+│  │ 10.0.1.4           │  │                      │  │ delegated: Microsoft.App/envs   │  │
+│  │ DNS Proxy enabled  │  │                      │  │ (Foundry Agent compute)         │  │
+│  └────────────────────┘  │                      │  └─────────────────────────────────┘  │
+│                          │                      │                                        │
+│  ┌────────────────────┐  │                      │  ┌─────────────────────────────────┐  │
+│  │ Log Analytics      │  │                      │  │ pe-subnet       10.100.4.0/24   │  │
+│  │ (firewall logs)    │  │                      │  │ PEs: Foundry, Search, Storage,  │  │
+│  └────────────────────┘  │                      │  │      Cosmos DB, Blob, File      │  │
+│                          │                      │  └─────────────────────────────────┘  │
+│  Private DNS Zones:      │                      │                                        │
+│  • cognitiveservices     │   UDR: 0/0 → FW     │  ┌─────────────────────────────────┐  │
+│  • openai                │◄─────────────────────│  │ func-subnet     10.100.6.0/24   │  │
+│  • search                │                      │  │ (SharePoint sync Function App)  │  │
+│  • documents             │                      │  └─────────────────────────────────┘  │
+│  • blob / file / vault   │                      │                                        │
+└──────────────────────────┘                      │  ┌─────────────────────────────────┐  │
+                                                  │  │ vm-subnet / Bastion (testing)   │  │
+                                                  │  └─────────────────────────────────┘  │
+                                                  └──────────────────────────────────────┘
 ```
 
-### Step 1: Create Private DNS Zones
+### Step 1: Deploy Hub Infrastructure
 
-Before deploying, create all 7 private DNS zones and link them to the spoke VNet:
+The hub contains the shared network services: Azure Firewall, Private DNS Zones, and Log Analytics.
 
 ```bash
-RG="foundry-private"
-SUB="<your-subscription-id>"
-VNET_ID="/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.Network/virtualNetworks/foundry-vnet"
-
-ZONES=(
-  "privatelink.cognitiveservices.azure.com"
-  "privatelink.openai.azure.com"
-  "privatelink.services.ai.azure.com"
-  "privatelink.search.windows.net"
-  "privatelink.documents.azure.com"
-  "privatelink.blob.core.windows.net"
-  "privatelink.file.core.windows.net"
-)
-
-for zone in "${ZONES[@]}"; do
-  az network private-dns zone create -g $RG -n "$zone"
-  az network private-dns link vnet create -g $RG -n "${zone}-link" \
-    --zone-name "$zone" --virtual-network "$VNET_ID" --registration-enabled false
-done
+cd deployment
+cp hub.env.example hub.env      # Edit: set SUBSCRIPTION_ID, LOCATION
+./1-deploy-hub.sh
 ```
 
-### Step 2: Register Resource Providers
+**What it creates:**
 
-The agent subnet delegation requires `Microsoft.App` and `Microsoft.ContainerService`:
+| Resource | Purpose |
+|----------|---------|
+| Hub VNet (`10.0.0.0/16`) | Central network hub |
+| Azure Firewall + Policy | Egress control with Foundry-specific FQDN rules |
+| Log Analytics Workspace | Firewall diagnostic logs |
+| 8 Private DNS Zones | DNS resolution for all private endpoints |
+
+### Step 2: Deploy Spoke Network
+
+The spoke creates the VNet infrastructure that will host Foundry and its dependent services.
 
 ```bash
-az provider register --namespace Microsoft.App
-az provider register --namespace Microsoft.ContainerService
+cp spoke.env.example spoke.env  # Edit: set SUBSCRIPTION_ID, SPOKE_RG, etc.
+./2-deploy-spoke.sh
 ```
 
-Wait for both to show `Registered`:
+**What it creates:**
 
-```bash
-az provider show -n Microsoft.App --query registrationState -o tsv
-az provider show -n Microsoft.ContainerService --query registrationState -o tsv
-```
+| Resource | Purpose |
+|----------|---------|
+| Spoke VNet (`10.100.0.0/16`) | Hosts all Foundry resources |
+| `agent-subnet` (`10.100.3.0/24`) | Foundry Agent Service (delegated to `Microsoft.App/environments`) |
+| `pe-subnet` (`10.100.4.0/24`) | Private endpoints for all PaaS services |
+| `vm-subnet` + Bastion | Test VM for verifying DNS and connectivity |
+| VNet Peering | Bidirectional hub ↔ spoke |
+| UDR | `0.0.0.0/0` → Firewall (applied to all subnets) |
+| DNS Zone Links | All 8 zones linked to spoke VNet |
 
-### Step 3: Deploy via Azure Portal
+### Step 3: Deploy Foundry (Modified Template 15)
 
-Click **"Deploy to Azure"** from the [Template 15 README](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/15-private-network-standard-agent-setup).
+This repo includes a **modified copy** of the [official Microsoft Template 15](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/15-private-network-standard-agent-setup) in the `bicep/` directory.
 
-Fill in the parameters — here's what the form looks like with BYO VNet values:
+#### Why We Modified Template 15
 
-![Deployment Parameters](bicp-scresnshots.jpeg)
+The original Template 15 creates a VNet with subnets but doesn't address hub-spoke scenarios. Our modifications add:
 
-Key parameters for BYO VNet:
+1. **`firewallPrivateIp` parameter** — When set, creates a UDR that routes `0.0.0.0/0` to your firewall and attaches it to the agent subnet
+2. **`defaultOutboundAccess: false`** on subnets — Ensures no implicit outbound internet access even without the UDR
+3. **Existing VNet support** — Uses `existingVnetResourceId` to deploy into the spoke VNet created in Step 2
+
+#### Deploy via Azure Portal (Recommended)
+
+Click the button below to deploy directly:
+
+[![Deploy To Azure](https://raw.githubusercontent.com/Azure/azure-quickstart-templates/master/1-CONTRIBUTION-GUIDE/images/deploytoazure.svg?sanitize=true)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Froie9876%2FAzure-AI-Foundry-Networking%2Frefs%2Fheads%2Fmain%2Fbicep%2Fazuredeploy.json)
+
+Fill in these key parameters:
 
 | Parameter | Value |
 |-----------|-------|
-| **Vnet Name** | `foundry-vnet` |
+| **Location** | Same as your spoke (e.g., `swedencentral`) |
+| **Vnet Name** | `spoke-vnet` |
 | **Agent Subnet Name / Prefix** | `agent-subnet` / `10.100.3.0/24` |
 | **Pe Subnet Name / Prefix** | `pe-subnet` / `10.100.4.0/24` |
 | **Existing Vnet Resource Id** | Full resource ID of your spoke VNet |
-| **Vnet Address Prefix** | `10.100.0.0/16` |
+| **Firewall Private Ip** | Your firewall's private IP (e.g., `10.0.1.4`) |
 | **Dns Zones Subscription Id** | Your subscription ID |
-| **Existing Dns Zones** | JSON mapping zone names → **resource group name** (not full resource ID!) |
-| **Ai Search / Storage / Cosmos** | Leave empty (template creates new ones) |
+| **Existing Dns Zones** | JSON mapping zone names → hub resource group name |
 
-> **Important:** The `existingDnsZones` parameter expects the **resource group name** where each DNS zone lives, NOT the full resource ID. For example:
-> ```json
-> {
->   "privatelink.services.ai.azure.com": "foundry-private",
->   "privatelink.openai.azure.com": "foundry-private",
->   "privatelink.cognitiveservices.azure.com": "foundry-private",
->   "privatelink.search.windows.net": "foundry-private",
->   "privatelink.documents.azure.com": "foundry-private",
->   "privatelink.blob.core.windows.net": "foundry-private",
->   "privatelink.file.core.windows.net": "foundry-private"
-> }
-> ```
-> Leave a zone value empty (`""`) to let the template create a new zone for that service.
-
-### Step 4: Troubleshooting
-
-**"Subscription not registered with Microsoft.App"** — Register the providers (Step 2 above).
-
-**"AccountIsNotSucceeded — Current state: Failed"** — A previous failed deployment left the AI Services account in a broken state. Delete and purge it:
-
-```bash
-az cognitiveservices account delete --name <account-name> -g foundry-private
-az cognitiveservices account purge --name <account-name> -g foundry-private --location swedencentral
+**`existingDnsZones` example:**
+```json
+{
+  "privatelink.services.ai.azure.com": "foundry-hub-rg",
+  "privatelink.openai.azure.com": "foundry-hub-rg",
+  "privatelink.cognitiveservices.azure.com": "foundry-hub-rg",
+  "privatelink.search.windows.net": "foundry-hub-rg",
+  "privatelink.documents.azure.com": "foundry-hub-rg",
+  "privatelink.blob.core.windows.net": "foundry-hub-rg",
+  "privatelink.file.core.windows.net": "foundry-hub-rg"
+}
 ```
 
-Then redeploy — ARM is incremental, so it will skip already-created resources and only recreate what failed.
-
-### Step 5: Attach UDR to New Subnets
-
-After deployment, attach your existing UDR to the new subnets so traffic routes through Azure Firewall:
+#### Deploy via CLI (Alternative)
 
 ```bash
-az network vnet subnet update -g foundry-private --vnet-name foundry-vnet \
-  --name agent-subnet --route-table udr-foundry-private
+SPOKE_VNET_ID=$(az network vnet show -g foundry-spoke-rg -n spoke-vnet --query id -o tsv)
 
-az network vnet subnet update -g foundry-private --vnet-name foundry-vnet \
-  --name pe-subnet --route-table udr-foundry-private
+az deployment group create \
+  --resource-group foundry-spoke-rg \
+  --template-file ../bicep/main.bicep \
+  --parameters ../bicep/main.bicepparam \
+  --parameters \
+    existingVnetResourceId="$SPOKE_VNET_ID" \
+    firewallPrivateIp="10.0.1.4"
 ```
 
-### Step 6: Verify from Test VM
+### Step 4: Post-Deployment Configuration
 
-Connect to `foundry-vm` via Bastion and verify DNS resolves to private IPs:
+After Foundry deploys, complete these manual steps:
+
+1. **Register resource providers** — `Microsoft.App`, `Microsoft.ContainerService` (see [Part 10](#part-10-resource-provider-registrations))
+
+2. **Assign RBAC roles** (see [Part 9](#part-9-rbac-roles-required) for the full list)  
+   Key assignments: AI Services MI + Project MI → `Storage Blob Data Contributor` on Storage, `Search Index Data Contributor` + `Search Service Contributor` on AI Search. AI Search MI → `Storage Blob Data Reader` on Storage, `Cognitive Services OpenAI Contributor` on AI Services.
+
+3. **Create Shared Private Links** — AI Search needs 4 SPLs (see [Part 5](#part-5-shared-private-links-spls) for details):
+   - `blob` → Storage Account (indexer reads blobs)
+   - `foundry_account` → AI Services (Foundry control plane)
+   - `openai_account` → AI Services (embedding models)
+   - `cognitiveservices_account` → AI Services (cognitive skills)
+   
+   After creating, approve each pending PE connection on the target resource.
+
+4. **Set indexer execution to Private** — required when using SPLs:
+   ```bash
+   SEARCH_KEY=$(az search admin-key show --service-name <name> -g <rg> --query primaryKey -o tsv)
+   curl -X PUT "https://<name>.search.windows.net/indexers/<indexer>?api-version=2024-07-01" \
+     -H "Content-Type: application/json" -H "api-key: $SEARCH_KEY" \
+     -d '{"name":"<indexer>","dataSourceName":"<ds>","targetIndexName":"<idx>","parameters":{"configuration":{"executionEnvironment":"Private"}}}'
+   ```
+
+5. **Enable API key auth** on AI Services (portal limitation for knowledge source creation):
+   ```bash
+   az rest --method PATCH \
+     --url "https://management.azure.com/<ai-services-resource-id>?api-version=2024-10-01" \
+     --body '{"properties":{"disableLocalAuth":false}}'
+   ```
+
+6. **Enable semantic search** on AI Search:
+   ```bash
+   az rest --method PATCH \
+     --url "https://management.azure.com/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.Search/searchServices/<name>?api-version=2024-06-01-preview" \
+     --body '{"properties":{"semanticSearch":"free"}}'
+   ```
+
+### Step 5: Verify from Test VM
+
+Connect to the test VM via Bastion and verify DNS resolves to private IPs:
 
 ```bash
 nslookup <ai-services-name>.cognitiveservices.azure.com
@@ -1090,471 +1158,58 @@ nslookup <cosmos-name>.documents.azure.com
 # Should resolve to 10.100.4.x
 ```
 
-### Step 7: Configure RBAC for Knowledge Source (Blob → AI Search → AI Foundry)
-
-Template 15 creates the resources with managed identities, but it does **not** assign all the cross-service RBAC roles needed for knowledge source scenarios (e.g., connecting Azure Blob Storage as a knowledge source in AI Foundry). You must configure these manually.
-
-#### 7.1 Identify Managed Identity Principal IDs
-
-Each resource deployed by Template 15 has a **system-assigned managed identity**. You need the Principal ID (Object ID) of each to assign RBAC roles.
-
-**Foundry Project identity** — note the breadcrumb shows this is the *project* (`projectu6s7`), a child of AI Services, with its own separate MI:
-
-![Foundry Project Managed Identity](images/project-identity.jpeg)
-
-**AI Search identity** — a completely separate resource with its own MI:
-
-![AI Search Managed Identity](images/ai-search-identity.jpeg)
-
-> **🔑 Clarifying the identities — this is confusing!**
->
-> There are **three** managed identities involved, and the naming is misleading:
->
-> | Portal / CLI name | What it actually is | Azure resource type |
-> |-------------------|--------------------|--------------------|
-> | **AI Services** (or "Foundry Account") | **This IS the Foundry resource itself.** In the Azure Portal it appears as `Microsoft.CognitiveServices/accounts`. When you see "Foundry" in the portal breadcrumb, that's this resource. It's the hub that hosts your models (GPT-4.1, text-embedding-3-small) and orchestrates everything. **This is NOT Azure AI Search.** | `Microsoft.CognitiveServices/accounts` |
-> | **Foundry Project** | A child resource under the AI Services account. Each project has its own separate managed identity. In the portal it appears under **Resource Management → Projects**. | `Microsoft.CognitiveServices/accounts/projects` |
-> | **AI Search** | The Azure AI Search service. A completely separate resource from AI Services/Foundry. | `Microsoft.Search/searchServices` |
->
-> **Common confusion:** People often think "AI Services" refers to AI Search — it doesn't. **AI Services = Foundry = the resource that hosts your models.** AI Search is a separate service used for indexing and retrieval.
-
-<details>
-<summary><b>Option A: Find via Azure Portal</b></summary>
-
-For each resource (**AI Services**, **AI Search**, **Storage Account**):
-
-1. Go to the resource in the Azure Portal
-2. Left menu → **Identity** → **System assigned** tab
-3. Verify **Status** is **On**
-4. Copy the **Object (principal) ID**
-
-For the **Foundry Project** managed identity:
-1. Go to your AI Services resource
-2. Left menu → **Resource Management** → **Properties**
-3. Look for the project under connected resources, or:
-4. Go to **Microsoft Entra ID** → **Enterprise applications** → search for your project name → copy the **Object ID**
-
-</details>
-
-<details>
-<summary><b>Option B: Find via CLI</b></summary>
-
+Verify traffic routes through the firewall:
 ```bash
-RG="foundry-private"
-
-# AI Services (hub account) managed identity
-AI_MI=$(az cognitiveservices account show --name <ai-services-name> -g $RG \
-  --query identity.principalId -o tsv)
-
-# Foundry Project managed identity
-PROJ_MI=$(az cognitiveservices account show --name <ai-services-name> -g $RG \
-  --query "properties.capabilities[?name=='projectPrincipalId'].value" -o tsv 2>/dev/null)
-# If the above doesn't work, get it from the portal or resource JSON:
-# PROJ_MI=$(az resource show --ids "<ai-services-id>/projects/<project-name>" --query identity.principalId -o tsv)
-
-# AI Search managed identity
-SEARCH_MI=$(az search service show --name <search-name> -g $RG \
-  --query identity.principalId -o tsv)
-
-echo "AI Services MI: $AI_MI"
-echo "Project MI:     $PROJ_MI"
-echo "AI Search MI:   $SEARCH_MI"
+curl -s ifconfig.me
+# Should return the firewall's public IP
 ```
 
-</details>
+### Firewall Rules Reference
 
-#### 7.2 Assign RBAC Roles
+We tested Foundry behind a **deny-all** firewall and discovered the minimum FQDNs that must be allowed. These rules are split by purpose — start with the required ones and add optional rules as needed.
 
-The following roles enable AI Foundry's project to index blob data via AI Search and serve it as a knowledge source.
+> **Official reference:** For the full Container Apps firewall requirements, see [Integrate Azure Container Apps with Azure Firewall — Application Rules](https://learn.microsoft.com/en-us/azure/container-apps/use-azure-firewall#application-rules)
 
-**AI Search IAM** — AI Services + Project MIs get Search Index Data Contributor + Search Service Contributor:
+#### Required: Agent Service Infrastructure
 
-![AI Search IAM Role Assignments](images/ai-search-iam-roles.jpeg)
+These FQDNs are the **minimum** needed for the Foundry Agent Service (Container Apps) to start and run:
 
-**Storage IAM** — AI Services, Project, and AI Search MIs all get Storage Blob Data Contributor; Project also gets Storage Blob Data Owner:
+| Protocol | FQDNs | Purpose |
+|----------|-------|---------|
+| UDP/53 | `*` | DNS resolution (required for all private endpoint lookups) |
+| HTTPS/443 | `mcr.microsoft.com`, `*.data.mcr.microsoft.com` | Microsoft Container Registry — agent runtime image pulls |
+| HTTPS/443 | `*.login.microsoft.com`, `login.microsoftonline.com`, `*.login.microsoftonline.com` | Entra ID authentication |
+| HTTPS/443 | `*.identity.azure.net` | Managed identity token acquisition |
 
-![Storage IAM Role Assignments](images/storage-iam-roles.jpeg)
+#### Required: Foundry Evaluation
 
-<details>
-<summary><b>Option A: Assign via Azure Portal</b></summary>
+Without these, Foundry evaluation jobs will fail:
 
-For each role assignment in the table below, repeat these steps:
+| Protocol | FQDNs | Purpose |
+|----------|-------|---------|
+| HTTPS/443 | `*.azureml.ms` | Azure ML evaluation backend |
+| HTTPS/443 | `*.blob.core.windows.net` | Evaluation data storage |
+| HTTPS/443 | `raw.githubusercontent.com` | Evaluation prompt templates |
 
-1. Go to the **Target Resource** in the Azure Portal (e.g., your Storage Account)
-2. Left menu → **Access control (IAM)**
-3. Click **+ Add** → **Add role assignment**
-4. **Role** tab → search for the role name (e.g., "Storage Blob Data Contributor") → select it → **Next**
-5. **Members** tab → **Assign access to**: select **Managed identity**
-6. Click **+ Select members**
-7. **Managed identity** dropdown → choose the resource type (e.g., "Cognitive Services" for AI Services, "Search service" for AI Search)
-8. Select the correct identity from the list → **Select**
-9. **Review + assign** → **Review + assign**
+#### Optional: Application Insights
 
-Repeat for all 8 role assignments listed in the RBAC Summary table below.
+Only needed if you want Application Insights telemetry from your agents:
 
-</details>
+| Protocol | FQDNs | Purpose |
+|----------|-------|---------|
+| HTTPS/443 | `settings.sdk.monitor.azure.com` | App Insights SDK configuration |
 
-<details>
-<summary><b>Option B: Assign via CLI</b></summary>
+#### Additional for SharePoint Sync (Part 14)
 
-```bash
-RG="foundry-private"
-STORAGE_ID=$(az storage account show --name <storage-name> -g $RG --query id -o tsv)
-SEARCH_ID=$(az search service show --name <search-name> -g $RG --query id -o tsv)
-AI_ID=$(az cognitiveservices account show --name <ai-services-name> -g $RG --query id -o tsv)
+| Protocol | FQDNs | Purpose |
+|----------|-------|---------|
+| HTTPS/443 | `graph.microsoft.com`, `login.microsoftonline.com`, `*.sharepoint.com` | Graph API for file sync + SharePoint REST |
 
-# --- AI Services → Storage ---
-az role assignment create --assignee-object-id "$AI_MI" \
-  --assignee-principal-type ServicePrincipal \
-  --role "Storage Blob Data Contributor" --scope "$STORAGE_ID"
-
-# --- Project → Storage ---
-az role assignment create --assignee-object-id "$PROJ_MI" \
-  --assignee-principal-type ServicePrincipal \
-  --role "Storage Blob Data Contributor" --scope "$STORAGE_ID"
-
-# --- AI Services → AI Search ---
-az role assignment create --assignee-object-id "$AI_MI" \
-  --assignee-principal-type ServicePrincipal \
-  --role "Search Index Data Contributor" --scope "$SEARCH_ID"
-
-az role assignment create --assignee-object-id "$AI_MI" \
-  --assignee-principal-type ServicePrincipal \
-  --role "Search Service Contributor" --scope "$SEARCH_ID"
-
-# --- Project → AI Search ---
-az role assignment create --assignee-object-id "$PROJ_MI" \
-  --assignee-principal-type ServicePrincipal \
-  --role "Search Index Data Contributor" --scope "$SEARCH_ID"
-
-az role assignment create --assignee-object-id "$PROJ_MI" \
-  --assignee-principal-type ServicePrincipal \
-  --role "Search Service Contributor" --scope "$SEARCH_ID"
-
-# --- AI Search → Storage (indexer reads blobs) ---
-az role assignment create --assignee-object-id "$SEARCH_MI" \
-  --assignee-principal-type ServicePrincipal \
-  --role "Storage Blob Data Reader" --scope "$STORAGE_ID"
-
-# --- AI Search → AI Services (vectorization / embeddings) ---
-az role assignment create --assignee-object-id "$SEARCH_MI" \
-  --assignee-principal-type ServicePrincipal \
-  --role "Cognitive Services OpenAI Contributor" --scope "$AI_ID"
-```
-
-</details>
-
-#### RBAC Summary
-
-| # | Assignee (Managed Identity) | Target Resource | Role | Purpose |
-|---|---------------------------|-----------------|------|---------|
-| 1 | **AI Services** *(= Foundry resource, NOT AI Search)* | Storage Account | Storage Blob Data Contributor | Read/write blob data |
-| 2 | **Foundry Project** *(child of AI Services)* | Storage Account | Storage Blob Data Contributor | Read/write blob data |
-| 3 | **AI Services** *(= Foundry resource)* | AI Search | Search Index Data Contributor | Create/manage indexes |
-| 4 | **AI Services** *(= Foundry resource)* | AI Search | Search Service Contributor | Manage search service |
-| 5 | **Foundry Project** | AI Search | Search Index Data Contributor | Create/manage indexes |
-| 6 | **Foundry Project** | AI Search | Search Service Contributor | Manage search service |
-| 7 | **AI Search** | Storage Account | Storage Blob Data Reader | Index blob content |
-| 8 | **AI Search** | AI Services *(= Foundry)* | Cognitive Services OpenAI Contributor | Generate embeddings for vectorization |
-
-#### 7.3 Create Shared Private Links (AI Search → Storage & AI Services)
-
-In a fully private setup, AI Search cannot reach other resources over the public internet. You must create **Shared Private Links (SPLs)** so AI Search can connect through managed private endpoints.
-
-**Topology — AI Search Shared Private Links (outbound connections):**
-
-```
-                          ┌─────────────────────────────────┐
-                          │       Azure AI Search           │
-                          │    (aiservicesu6s7search)       │
-                          │                                 │
-                          │   Public access: Disabled       │
-                          │   Trusted services: Enabled     │
-                          └──────────┬──────────────────────┘
-                                     │
-                    Shared Private Links (SPLs)
-                    ─────────────────────────────
-                    │            │            │            │
-              ┌─────▼────┐ ┌────▼─────┐ ┌────▼─────┐ ┌────▼──────┐
-              │  blob     │ │ foundry  │ │ openai   │ │ cognitive │
-              │          │ │ _account │ │ _account │ │ _account  │
-              └─────┬────┘ └────┬─────┘ └────┬─────┘ └────┬──────┘
-                    │           │             │             │
-              ┌─────▼────┐ ┌────▼─────────────▼─────────────▼──────┐
-              │ Storage  │ │         AI Services Account           │
-              │ Account  │ │        (aiservicesu6s7)               │
-              │ (blob)   │ │                                       │
-              │          │ │  foundry_account = Foundry control    │
-              └──────────┘ │  openai_account  = Embedding models  │
-                           │  cognitive_account = AI Services API  │
-                           └───────────────────────────────────────┘
-```
-
-**You need FOUR SPLs:**
-
-| # | Name | To | Sub-resource | Purpose |
-|---|------|-----|-------------|---------|
-| 1 | `shared-to-blob` | Storage Account | `blob` | Indexer reads blob data |
-| 2 | `foundry_account` | AI Services | `foundry_account` | Foundry control plane connection (agent orchestration, knowledge source management) |
-| 3 | `openai_account` | AI Services | `openai_account` | Indexer calls embedding model (e.g., text-embedding-3-small) for vectorization skillsets |
-| 4 | `cognitive_account` | AI Services | `cognitiveservices_account` | AI Search built-in cognitive skills (OCR, entity recognition, key phrase extraction) |
-
-> **Why FOUR SPLs to the same AI Services account?** Each sub-resource exposes a different API surface. The AI Services account is a single resource, but AI Search needs separate private connections to reach different capabilities:
-> - `openai_account` — embedding models for vectorization during indexing
-> - `foundry_account` — Foundry control plane for knowledge source integration
-> - `cognitiveservices_account` — built-in cognitive skills for document enrichment
-
-![AI Search Shared Private Access](images/ai-search-shared-private-access.jpeg)
-
-<details>
-<summary><b>Option A: Create via Azure Portal</b></summary>
-
-**For each SPL (repeat 4 times):**
-1. Go to your **AI Search** service
-2. Left menu → **Settings** → **Networking**
-3. Click the **Shared private access** tab
-4. Click **+ Add Shared Private Access**
-5. Fill in:
-
-**SPL #1 — Blob Storage:**
-   - **Name**: `shared-to-blob`
-   - **Resource type**: `Microsoft.Storage/storageAccounts`
-   - **Resource**: select your storage account
-   - **Target sub-resource**: `blob`
-   - **Request message**: "shared to blob"
-
-**SPL #2 — Foundry Account:**
-   - **Name**: `foundry_account`
-   - **Resource type**: `Microsoft.CognitiveServices/accounts`
-   - **Resource**: select your AI Services account
-   - **Target sub-resource**: `foundry_account`
-   - **Request message**: "foundry_account"
-
-**SPL #3 — OpenAI Account (embedding):**
-   - **Name**: `openai_account`
-   - **Resource type**: `Microsoft.CognitiveServices/accounts`
-   - **Resource**: select your AI Services account
-   - **Target sub-resource**: `openai_account`
-   - **Request message**: "openai_account"
-
-**SPL #4 — Cognitive Services Account:**
-   - **Name**: `cognitive_account`
-   - **Resource type**: `Microsoft.CognitiveServices/accounts`
-   - **Resource**: select your AI Services account
-   - **Target sub-resource**: `cognitiveservices_account`
-   - **Request message**: "cognitive_account"
-
-6. Click **OK** — status will show **Pending**
-
-**Approve each connection on the target resource:**
-1. Go to the **target resource** (Storage Account or AI Services account)
-2. Left menu → **Networking** → **Private endpoint connections** tab
-3. Find the connection(s) with status **Pending** (from AI Search)
-4. Select each → click **Approve**
-
-> **Note:** SPLs #2, #3, and #4 all target the same AI Services account but different sub-resources. You'll see 3 pending connections on the AI Services Networking page.
-
-</details>
-
-<details>
-<summary><b>Option B: Create via CLI</b></summary>
-
-```bash
-STORAGE_ID=$(az storage account show --name <storage-name> -g $RG --query id -o tsv)
-AI_ID=$(az cognitiveservices account show --name <ai-services-name> -g $RG --query id -o tsv)
-
-# SPL #1: AI Search → Blob Storage
-az search shared-private-link-resource create \
-  --name "shared-to-blob" \
-  --service-name <search-name> \
-  --resource-group $RG \
-  --group-id "blob" \
-  --resource-id "$STORAGE_ID" \
-  --request-message "shared to blob"
-
-# SPL #2: AI Search → Foundry Account
-az search shared-private-link-resource create \
-  --name "foundry_account" \
-  --service-name <search-name> \
-  --resource-group $RG \
-  --group-id "foundry_account" \
-  --resource-id "$AI_ID" \
-  --request-message "foundry_account"
-
-# SPL #3: AI Search → OpenAI Account (embedding model)
-az search shared-private-link-resource create \
-  --name "openai_account" \
-  --service-name <search-name> \
-  --resource-group $RG \
-  --group-id "openai_account" \
-  --resource-id "$AI_ID" \
-  --request-message "openai_account"
-
-# SPL #4: AI Search → Cognitive Services Account
-az search shared-private-link-resource create \
-  --name "cognitive_account" \
-  --service-name <search-name> \
-  --resource-group $RG \
-  --group-id "cognitiveservices_account" \
-  --resource-id "$AI_ID" \
-  --request-message "cognitive_account"
-```
-
-After creation, **approve** the pending private endpoint connections:
-
-```bash
-# Approve on Storage Account
-PE_CONN=$(az storage account show --name <storage-name> -g $RG \
-  --query "privateEndpointConnections[?properties.privateLinkServiceConnectionState.status=='Pending'].name" -o tsv)
-az storage account private-endpoint-connection approve \
-  --account-name <storage-name> -g $RG \
-  --name "$PE_CONN" --description "Approved for AI Search indexer"
-
-# Approve on AI Services
-# (Check in the portal under AI Services → Networking → Private endpoint connections)
-```
-
-</details>
-
-**How SPLs appear on the target resource:** When AI Search creates an SPL to Storage, it shows up as a private endpoint connection on the Storage Account's Networking page. Notice there are **two** connections — the Template 15 PE ("Auto-Approved") and the AI Search SPL (`shared-to-blob`, "Approved"):
-
-![Storage Private Endpoint Connections](images/storage-pe-connections.jpeg)
-
-The Storage Account's public access is fully **Disabled** — all access goes through private endpoints:
-
-![Storage Public Access Disabled](images/storage-public-access-disabled.jpeg)
-
-> **Without the Shared Private Links**, creating a knowledge source in the Foundry portal will fail with:
-> *"Failed to create knowledge source. Failed to create or update Knowledge Source."*
-
-> **Note:** Template 15 creates the `shared-to-blob` SPL automatically. The `foundry_account`, `openai_account`, and `cognitive_account` SPLs are created by the Foundry platform when you set up knowledge sources or agents with AI Search integration. You may need to manually create them if the automated process fails in a fully private setup.
-
-#### 7.4 Set Indexer Execution Environment to Private
-
-When AI Search uses **Shared Private Links**, the indexer **must** run in the private execution environment. By default, Azure AI Search may run indexers in a multitenant environment — which cannot use SPLs.
-
-You must set `"executionEnvironment": "Private"` on each indexer.
-
-> **Reference:** [Considerations for using a private endpoint](https://learn.microsoft.com/en-us/azure/search/search-indexer-securing-resources#considerations-for-using-a-private-endpoint)
-
-**Why?** Azure AI Search has two indexer execution environments:
-- **Multitenant** — shared compute managed by Microsoft. Cannot use shared private links.
-- **Private** — runs within the search service itself. **Required** when using SPLs.
-
-If you don't set this, the indexer may run in the multitenant environment and fail with `transientFailure` because it can't reach the storage account or AI Services through the SPL.
-
-**Set via REST API:**
-
-```bash
-# Get your AI Search admin key (or use managed identity auth)
-SEARCH_NAME="<search-name>"
-RG="<resource-group>"
-SEARCH_KEY=$(az search admin-key show --service-name $SEARCH_NAME -g $RG --query primaryKey -o tsv)
-
-# Update the indexer to use private execution environment
-curl -X PUT "https://${SEARCH_NAME}.search.windows.net/indexers/<indexer-name>?api-version=2024-07-01" \
-  -H "Content-Type: application/json" \
-  -H "api-key: ${SEARCH_KEY}" \
-  -d '{
-    "name": "<indexer-name>",
-    "dataSourceName": "<datasource-name>",
-    "targetIndexName": "<index-name>",
-    "skillsetName": "<skillset-name>",
-    "parameters": {
-      "configuration": {
-        "executionEnvironment": "Private"
-      }
-    }
-  }'
-```
-
-**Set via Azure Portal:**
-1. Go to your **AI Search** service
-2. Left menu → **Search management** → **Indexers**
-3. Click on your indexer → **Indexer Definition (JSON)**
-4. Add `"executionEnvironment": "Private"` under `parameters.configuration`
-5. Click **Save**
-
-![Indexer List — Success status with Restricted Access banner](images/ai-search-indexer-private1.jpeg)
-
-![Indexer JSON — executionEnvironment set to Private (line 22)](images/ai-search-indexer-private2.jpeg)
-
-```json
-{
-  "name": "my-indexer",
-  "dataSourceName": "my-datasource",
-  "targetIndexName": "my-index",
-  "skillsetName": "my-skillset",
-  "parameters": {
-    "configuration": {
-      "executionEnvironment": "Private"
-    }
-  }
-}
-```
-
-> **Important:** This setting is per-indexer, not per-service. Every indexer that uses an SPL must have this set individually.
-
-#### 7.5 Enable API Key Authentication on AI Services (`disableLocalAuth`)
-
-The Foundry Portal's knowledge source creation flow currently requires **API key authentication** to be enabled on your AI Services account. This is a portal limitation — internally it calls `List Keys` to embed the API key in the AI Search skillset definition.
-
-If `disableLocalAuth` is set to `true` (meaning API keys are disabled, Entra-only auth), you will see repeated failures:
-
-> *"Failed to list key. disableLocalAuth is set to be true"*
-
-**How to check:**
-```bash
-az cognitiveservices account show --name <ai-services-name> -g $RG \
-  --query "{disableLocalAuth:properties.disableLocalAuth}" -o json
-```
-
-**How to enable API keys:**
-
-In the Azure Portal:
-1. Go to your **AI Services** resource
-2. Left menu → **Properties**
-3. Set **"Allow API key based authentication"** to **Enabled**
-4. Click **Save**
-
-Via CLI:
-```bash
-az rest --method PATCH \
-  --url "https://management.azure.com/<ai-services-resource-id>?api-version=2024-10-01" \
-  --headers "Content-Type=application/json" \
-  --body '{"properties":{"disableLocalAuth":false}}'
-```
-
-> **⚠️ Azure Policy Warning:** Some enterprise subscriptions have a **modify policy** (`CognitiveServices_LocalAuth_Modify`) that automatically enforces `disableLocalAuth=true` on every deployment. If your changes keep reverting, check for policy enforcement:
-> ```bash
-> az policy state list \
->   --resource "<ai-services-resource-id>" \
->   --query "[?policyDefinitionAction=='modify'].{policy:policyDefinitionName, action:policyDefinitionAction}" \
->   -o table
+> **Tip:** If you see blocked traffic in the firewall logs, query Log Analytics:
+> ```kql
+> AZFWApplicationRule | where Action == "Deny" | project TimeGenerated, Fqdn, SourceIp
+> AZFWNetworkRule | where Action == "Deny" | project TimeGenerated, DestinationIp, DestinationPort
 > ```
-> If a modify policy is active, you need a **policy exemption** from your governance team before you can enable API keys.
-
-> **Security note:** With all public network access disabled and private endpoints in place, enabling API key auth has minimal security impact — the keys are useless without network access to the resource. The real protection comes from the network isolation, not key disablement.
-
-#### 7.6 Enable Semantic Search on AI Search
-
-Template 15 deploys AI Search with **Semantic Search disabled** by default. The knowledge base retrieval requires the semantic ranker — without it, queries will fail with:
-
-> *"SemanticQueriesNotAvailable: Semantic Search is not enabled for this service."*
-
-**Enable via CLI:**
-
-```bash
-az rest --method patch \
-  --url "https://management.azure.com/subscriptions/$SUB_ID/resourceGroups/$RG/providers/Microsoft.Search/searchServices/<search-name>?api-version=2024-06-01-preview" \
-  --body '{"properties":{"semanticSearch":"free"}}'
-```
-
-**Enable via Portal:**
-1. Go to your AI Search service
-2. **Settings** → **Semantic ranker**
-3. Select **Free** (or **Standard** for production)
-4. Click **Save**
 
 ### What Template 15 Creates
 
@@ -1566,6 +1221,145 @@ az rest --method patch \
 | Azure Cosmos DB (NoSQL) | Thread/conversation storage | **Disabled** |
 | Private Endpoints (6) | Secure connectivity to all PaaS services | N/A |
 | Subnet delegation | `agent-subnet` delegated to `Microsoft.App/environments` | N/A |
+
+### What You Get After Steps 1–5
+
+At this point you have a **fully private Foundry agent** that can:
+- Deploy and run agents (GPT-4.1) in a private VNet
+- Use RAG on files uploaded to the private Blob storage
+- All traffic inspected by Azure Firewall
+- Zero public internet exposure on any PaaS service
+
+---
+
+## Part 14: SharePoint Online Integration — Secure Sync with Foundry IQ
+
+> **Credit:** The SharePoint sync solution is based on [sharepoint-foundryIQ-secure-sync](https://github.com/Azure-Samples/sharepoint-foundryIQ-secure-sync) by **[Sidali Kadouche](https://github.com/sidkadouc)** ([@sidkadouc](https://github.com/sidkadouc)). We adapted it to run within our hub-spoke private network.
+
+### Why Add SharePoint?
+
+After completing Part 13, your Foundry agent can do RAG on files you manually upload to Blob storage. But in most enterprises, the documents live in **SharePoint Online** — not in Azure Blob.
+
+The SharePoint sync pipeline bridges this gap:
+
+```
+SharePoint Online                     Hub-Spoke Network
+┌──────────────┐    Graph API    ┌──────────────────────────────────────────────┐
+│              │    (via FW)     │  Spoke VNet                                  │
+│  Documents   │ ──────────────►│  ┌──────────────┐    ┌──────────────────┐    │
+│  Permissions │                │  │ Azure Func   │───►│ Blob Storage     │    │
+│  Labels      │                │  │ (func-subnet)│    │ (PE, existing)   │    │
+│              │                │  └──────────────┘    └────────┬─────────┘    │
+└──────────────┘                │                               │              │
+                                │                        Shared Private Link   │
+                                │                               │              │
+                                │                     ┌─────────▼──────────┐   │
+                                │                     │ AI Search          │   │
+                                │                     │ (indexer, private)  │   │
+                                │                     └─────────┬──────────┘   │
+                                │                               │              │
+                                │                     ┌─────────▼──────────┐   │
+                                │                     │ Foundry Agent      │   │
+                                │                     │ (grounded answers) │   │
+                                │                     └────────────────────┘   │
+                                └──────────────────────────────────────────────┘
+```
+
+### What the Pipeline Does
+
+1. **Syncs files** from SharePoint to Azure Blob Storage (with metadata and permissions)
+2. **Extracts SharePoint ACLs** — per-document access control lists
+3. **Indexes content** in Azure AI Search with OCR, chunking, and optional vector embeddings
+4. **Enables secure RAG** — Foundry agents search SharePoint content with permission enforcement
+5. (Optional) **Purview integration** — dual-layer ACLs: SharePoint permissions ∩ Purview RMS
+
+### Prerequisites
+
+Before deploying, you need:
+
+1. **Hub + Spoke + Foundry deployed** (Steps 1–3 from Part 13)
+2. **App Registration (SPN)** in Entra ID with:
+   - `Sites.Read.All` or `Sites.Selected` (Graph API application permission)
+   - `Files.Read.All` (Graph API application permission)
+   - A client secret generated
+3. **Azure Functions Core Tools** installed: `npm i -g azure-functions-core-tools@4`
+
+### Deploy the SharePoint Sync Layer
+
+```bash
+cd deployment
+cp sharepoint-sync.env.example sharepoint-sync.env   # Fill in your values
+./3-deploy-sharepoint-sync.sh
+```
+
+### What It Deploys
+
+| Resource | Purpose | Network |
+|----------|---------|---------|
+| `func-subnet` (`10.100.6.0/24`) | Function App VNet integration | UDR → Firewall |
+| Azure Function App (Elastic Premium, Python) | Runs the sync code on a schedule | VNet-integrated, managed identity |
+| Function Storage Account | Function App internal storage | Private (blob + file PEs) |
+| Key Vault | Stores SPN secrets + AI Search key | Private (PE), RBAC-enabled |
+| Blob Container (`sharepoint-sync`) | Synced SharePoint files with metadata | In existing Foundry storage |
+| AI Search Index | `sharepoint-index` with permission fields | Existing AI Search service |
+| AI Search Indexer | Hourly, private execution environment | Via Shared Private Link |
+| Shared Private Link | AI Search → Storage (blob) | Managed PE from Search |
+| Firewall Rule | `AllowSharePointSync` | `*.sharepoint.com`, `graph.microsoft.com` |
+
+### How Secrets Are Handled
+
+The deployment uses **Key Vault references** — secrets are never stored as plain text in Function App settings:
+
+```
+Function App Setting                 → Key Vault Secret
+─────────────────────────────────────────────────────────
+AZURE_TENANT_ID                      → @Microsoft.KeyVault(SecretUri=.../sp-tenant-id)
+AZURE_CLIENT_ID                      → @Microsoft.KeyVault(SecretUri=.../sp-client-id)
+AZURE_CLIENT_SECRET                  → @Microsoft.KeyVault(SecretUri=.../sp-client-secret)
+SEARCH_API_KEY                       → @Microsoft.KeyVault(SecretUri=.../search-api-key)
+```
+
+The Function App's managed identity has `Key Vault Secrets User` role — it can read secrets but not modify them.
+
+### Data Flow
+
+```
+1. Timer trigger (hourly) or manual invoke
+2. Function App → Graph API (via firewall: *.sharepoint.com, graph.microsoft.com)
+3. Downloads files + extracts permissions + sensitivity labels
+4. Writes to Blob Storage (via private endpoint)
+5. AI Search indexer (hourly, private execution) picks up new/changed blobs
+6. Foundry Agent queries AI Search → returns answers grounded in SharePoint docs
+```
+
+### Post-Deployment Steps
+
+1. **Approve the Shared Private Link** (if auto-approve failed):
+   Portal → Storage Account → Networking → Private endpoint connections → Approve
+
+2. **Trigger initial sync** — run the Function manually from the Azure Portal
+
+3. **Verify the indexer** runs successfully:
+   ```bash
+   # Temporarily enable AI Search public access to check
+   az search service update --name <search-name> -g <rg> --public-access enabled
+   SEARCH_KEY=$(az search admin-key show --service-name <search-name> -g <rg> --query primaryKey -o tsv)
+   curl -s "https://<search-name>.search.windows.net/indexers/<indexer-name>/status?api-version=2024-07-01" \
+     -H "api-key: $SEARCH_KEY" | python3 -m json.tool
+   # Lock down again
+   az search service update --name <search-name> -g <rg> --public-access disabled
+   ```
+
+4. **Create a Knowledge Source in Foundry** — connect the `sharepoint-index` to your agent for grounded answers
+
+### Troubleshooting
+
+| Issue | Cause | Fix |
+|-------|-------|-----|
+| Function App can't reach Graph API | Firewall blocking | Check `AllowSharePointSync` rule exists, source IP range matches spoke VNet |
+| Indexer fails: "Unable to retrieve blob container" | SPL not approved or MI missing RBAC | Approve SPL on Storage → Networking. Grant AI Search MI `Storage Blob Data Reader` on Storage |
+| Key Vault secret resolution fails (Function 500s) | KV PE not registered in DNS, or RBAC delay | Check DNS zone link. Wait 5 min for RBAC propagation |
+| Indexer status shows `transientFailure` | Not using private execution environment | Set `"executionEnvironment": "private"` on the indexer |
 
 ---
 
