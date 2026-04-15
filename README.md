@@ -1396,7 +1396,7 @@ The Foundry agent authenticates to AI Search using a connection credential (mana
 
 #### Option A: Custom Pre-Filtered RAG (Recommended)
 
-Build a custom application layer that intercepts the user's query, filters AI Search results by ACL, and passes only permitted documents to the agent as context. This is the approach used in the [original repo's agent-tool](https://github.com/Azure-Samples/sharepoint-foundryIQ-secure-sync/blob/main/agent-tool/Program.cs).
+Build a custom application layer that intercepts the user's query, filters AI Search results by ACL, and passes only permitted documents to the agent as context. This is the approach used in the [original repo's agent-tool](https://github.com/Azure-Samples/sharepoint-foundryIQ-secure-sync/blob/main/infra/deploy-private/agent-tool/Program.cs) (also copied to [agent-tool/Program.cs](agent-tool/Program.cs) in this repo).
 
 ```
 User (authenticated via Entra ID)
