@@ -135,16 +135,13 @@ echo ""
 ###############################################################################
 echo "──── Step 2: Creating Blob Container ────"
 
-STORAGE_KEY=$(az storage account keys list \
-  --account-name "$STORAGE_NAME" \
-  --resource-group "$SPOKE_RG" \
-  --query '[0].value' -o tsv)
+# Use ARM management plane API (not data plane) because enterprise policy
+# enforces allowSharedKeyAccess=false and storage is private.
+STORAGE_ID=$(az storage account show --name "$STORAGE_NAME" --resource-group "$SPOKE_RG" --query id -o tsv)
 
-az storage container create \
-  --name "$BLOB_CONTAINER_NAME" \
-  --account-name "$STORAGE_NAME" \
-  --account-key "$STORAGE_KEY" \
-  --auth-mode key \
+az rest --method PUT \
+  --url "https://management.azure.com${STORAGE_ID}/blobServices/default/containers/${BLOB_CONTAINER_NAME}?api-version=2023-05-01" \
+  --body '{"properties":{}}' \
   --output none 2>/dev/null || echo "  (container may already exist)"
 
 echo "  ✅ Container: $BLOB_CONTAINER_NAME in $STORAGE_NAME"
@@ -450,7 +447,7 @@ echo ""
 echo "──── Step 9: Shared Private Link (AI Search → Storage) ────"
 
 az rest --method PUT \
-  --url "https://management.azure.com/subscriptions/$SUBSCRIPTION/resourceGroups/$SPOKE_RG/providers/Microsoft.Search/searchServices/$AI_SEARCH_NAME/sharedPrivateLinkResources/spl-storage-blob?api-version=2024-06-01-preview" \
+  --url "https://management.azure.com/subscriptions/$SUBSCRIPTION/resourceGroups/$SPOKE_RG/providers/Microsoft.Search/searchServices/$AI_SEARCH_NAME/sharedPrivateLinkResources/spl-storage-blob?api-version=2024-07-01" \
   --body "{
     \"properties\": {
       \"privateLinkResourceId\": \"$STORAGE_ID\",
@@ -494,7 +491,7 @@ az search service update --name "$AI_SEARCH_NAME" --resource-group "$SPOKE_RG" \
 sleep 15
 
 # Index
-curl -s -X PUT "${SEARCH_ENDPOINT}/indexes/${INDEX_NAME:-sharepoint-index}?api-version=2024-06-01-preview" \
+curl -s -X PUT "${SEARCH_ENDPOINT}/indexes/${INDEX_NAME:-sharepoint-index}?api-version=2024-07-01" \
   -H "Content-Type: application/json" \
   -H "api-key: $SEARCH_KEY" \
   -d '{
@@ -520,7 +517,7 @@ echo "  ✅ Index: ${INDEX_NAME:-sharepoint-index}"
 STORAGE_RESOURCE_ID="/subscriptions/$SUBSCRIPTION/resourceGroups/$SPOKE_RG/providers/Microsoft.Storage/storageAccounts/$STORAGE_NAME"
 STORAGE_CONN="ResourceId=${STORAGE_RESOURCE_ID};"
 
-curl -s -X PUT "${SEARCH_ENDPOINT}/datasources/${DATASOURCE_NAME:-sharepoint-blob-ds}?api-version=2024-06-01-preview" \
+curl -s -X PUT "${SEARCH_ENDPOINT}/datasources/${DATASOURCE_NAME:-sharepoint-blob-ds}?api-version=2024-07-01" \
   -H "Content-Type: application/json" \
   -H "api-key: $SEARCH_KEY" \
   -d "{
@@ -532,7 +529,7 @@ curl -s -X PUT "${SEARCH_ENDPOINT}/datasources/${DATASOURCE_NAME:-sharepoint-blo
 echo "  ✅ Data Source: ${DATASOURCE_NAME:-sharepoint-blob-ds}"
 
 # Indexer (private execution environment, hourly schedule)
-curl -s -X PUT "${SEARCH_ENDPOINT}/indexers/${INDEXER_NAME:-sharepoint-blob-indexer}?api-version=2024-06-01-preview" \
+curl -s -X PUT "${SEARCH_ENDPOINT}/indexers/${INDEXER_NAME:-sharepoint-blob-indexer}?api-version=2024-07-01" \
   -H "Content-Type: application/json" \
   -H "api-key: $SEARCH_KEY" \
   -d '{

@@ -1201,9 +1201,10 @@ Only needed if you want Application Insights telemetry from your agents:
 
 #### Additional for SharePoint Sync (Part 14)
 
-| Protocol | FQDNs | Purpose |
-|----------|-------|---------|
-| HTTPS/443 | `graph.microsoft.com`, `login.microsoftonline.com`, `*.sharepoint.com` | Graph API for file sync + SharePoint REST |
+| Rule Collection | Rule Name | Protocol | FQDNs | Purpose |
+|-----------------|-----------|----------|-------|---------|
+| `AllowSharePointSync` | `GraphAPI` | HTTPS/443 | `graph.microsoft.com`, `login.microsoftonline.com`, `*.sharepoint.com`, `*.sharepointonline.com` | Graph API for file sync + SharePoint REST + Entra ID auth |
+| `AllowPythonBuildDeps` | `PyPI` | HTTPS/443 | `pypi.org`, `files.pythonhosted.org`, `pythonhosted.org` | PyPI — Python package downloads for Function App remote build (Oryx) |
 
 > **Tip:** If you see blocked traffic in the firewall logs, query Log Analytics:
 > ```kql
