@@ -40,7 +40,20 @@
 - [Part 13: Hands-On — Deploying Template 15 in a Hub-Spoke Network](#part-13-hands-on--deploying-template-15-in-a-hub-spoke-network)
   - [Firewall Rules Reference](#firewall-rules-reference)
 - [Part 14: SharePoint Online Integration — Secure Sync with Foundry IQ](#part-14-sharepoint-online-integration--secure-sync-with-foundry-iq)
-  - [ACL Enforcement & On-Behalf-Of (OBO)](#acl-enforcement--on-behalf-of-obo--current-gap-and-options)
+  - [14.1 What Problem Does This Solve?](#141-what-problem-does-this-solve)
+  - [14.2 End-to-End Architecture](#142-end-to-end-architecture-zoomed-in)
+  - [14.3 Ingest Flow — How Create / Update / Delete Propagate](#143-ingest-flow--how-create--update--delete-propagate)
+  - [14.4 What Ends Up in the Index — Schema & ACL Model](#144-what-ends-up-in-the-index--schema--acl-model)
+  - [14.5 How the Foundry Agent "Knows" About Permissions](#145-how-the-foundry-agent-knows-about-permissions--spoiler-it-doesnt-not-by-itself)
+  - [14.6 Verifying That ACLs Landed Correctly](#146-verifying-that-acls-landed-correctly)
+  - [14.7 `azure_ai_search` Tool vs. Knowledge Source](#147-azure_ai_search-tool-vs-knowledge-source--why-we-picked-the-tool)
+  - [14.8 Prerequisites](#148-prerequisites)
+  - [14.9 Deploy the SharePoint Sync Layer](#149-deploy-the-sharepoint-sync-layer)
+  - [14.10 Customer-Environment Configuration](#1410-customer-environment-configuration-optional-overrides)
+  - [14.11 What It Deploys](#1411-what-it-deploys)
+  - [14.12 How Secrets Are Handled](#1412-how-secrets-are-handled)
+  - [14.13 Post-Deployment Steps](#1413-post-deployment-steps)
+  - [14.14 Troubleshooting](#1414-troubleshooting)
 
 ---
 
@@ -1200,6 +1213,14 @@ Only needed if you want Application Insights telemetry from your agents:
 |----------|-------|---------|
 | HTTPS/443 | `settings.sdk.monitor.azure.com` | App Insights SDK configuration |
 
+#### Optional: Fine-Tuning Sample Datasets
+
+When using the fine-tune wizard in the Foundry Portal with a sample dataset, the `raw.githubusercontent.com` URL is passed as `content_url` to the AOAI files/import API. The AOAI backend fetches the file from GitHub. All 6 curated datasets (Supervised, DPO, Reinforcement) use this path.
+
+| Protocol | FQDNs | Purpose |
+|----------|-------|---------|
+| HTTPS/443 | `raw.githubusercontent.com`, `github.com`, `objects.githubusercontent.com` | AOAI fine-tune wizard — sample dataset import via `content_url` |
+
 #### Additional for SharePoint Sync (Part 14)
 
 | Rule Collection | Rule Name | Protocol | FQDNs | Purpose |
@@ -1236,48 +1257,314 @@ At this point you have a **fully private Foundry agent** that can:
 
 ## Part 14: SharePoint Online Integration — Secure Sync with Foundry IQ
 
-> **Credit:** The SharePoint sync solution is based on [sharepoint-foundryIQ-secure-sync](https://github.com/Azure-Samples/sharepoint-foundryIQ-secure-sync) by **[Sidali Kadouche](https://github.com/sidkadouc)** ([@sidkadouc](https://github.com/sidkadouc)). We adapted it to run within our hub-spoke private network.
+> **Credit:** The SharePoint sync engine is based on [Azure-Samples/sharepoint-foundryIQ-secure-sync](https://github.com/Azure-Samples/sharepoint-foundryIQ-secure-sync) by **[Sidali Kadouche](https://github.com/sidkadouc)** ([@sidkadouc](https://github.com/sidkadouc)). This repo adapts it to run inside a locked-down hub-spoke VNet and automates every wiring step.
 
 ![Part 14 — SharePoint Sync Architecture](docs/hub-spoke-foundry-sharepoint-sync.drawio.png)
 
-### Why Add SharePoint?
+### 14.1 What Problem Does This Solve?
 
-After completing Part 13, your Foundry agent can do RAG on files you manually upload to Blob storage. But in most enterprises, the documents live in **SharePoint Online** — not in Azure Blob.
+After Part 13, your Foundry agent can answer questions about files **you manually upload** to Blob Storage. In a real enterprise, the source of truth is **SharePoint Online** — and those files carry **per-document permissions** (users, groups, and optionally Purview/RMS sensitivity labels). You need two things that Foundry does not give you out of the box:
 
-The SharePoint sync pipeline bridges this gap:
+1. **Keep an AI-Search index in sync with SharePoint** — new files, edits, deletes, renames, and permission changes.
+2. **Respect SharePoint permissions at query time** — Alice must never see results from a document she cannot open in SharePoint.
+
+This section explains exactly how the pipeline achieves (1), what it stores in the index, and what you still have to build yourself to achieve (2).
+
+### 14.2 End-to-End Architecture (Zoomed In)
 
 ```
-SharePoint Online                     Hub-Spoke Network
-┌──────────────┐    Graph API    ┌──────────────────────────────────────────────┐
-│              │    (via FW)     │  Spoke VNet                                  │
-│  Documents   │ ──────────────►│  ┌──────────────┐    ┌──────────────────┐    │
-│  Permissions │                │  │ Azure Func   │───►│ Blob Storage     │    │
-│  Labels      │                │  │ (func-subnet)│    │ (PE, existing)   │    │
-│              │                │  └──────────────┘    └────────┬─────────┘    │
-└──────────────┘                │                               │              │
-                                │                        Shared Private Link   │
-                                │                               │              │
-                                │                     ┌─────────▼──────────┐   │
-                                │                     │ AI Search          │   │
-                                │                     │ (indexer, private)  │   │
-                                │                     └─────────┬──────────┘   │
-                                │                               │              │
-                                │                     ┌─────────▼──────────┐   │
-                                │                     │ Foundry Agent      │   │
-                                │                     │ (grounded answers) │   │
-                                │                     └────────────────────┘   │
-                                └──────────────────────────────────────────────┘
+                        ┌───────────────────────────────────────┐
+                        │           SharePoint Online           │
+                        │  (files, ACLs, sensitivity labels)    │
+                        └───────────────┬───────────────────────┘
+                                        │ 1. Graph API
+                                        │    (HTTPS 443, via Azure FW)
+                                        ▼
+ ┌──────────────────────────── Spoke VNet ─────────────────────────────────┐
+ │                                                                         │
+ │   ┌─────────────────────┐         ┌──────────────────────────────┐      │
+ │   │ Azure Function App  │  2.     │ Blob container                │      │
+ │   │  (Python, Elastic   │ ───────▶│  sharepoint-sync              │      │
+ │   │   Premium, VNet-    │  write  │  - one blob per SP file       │      │
+ │   │   integrated)       │         │  - metadata:                   │      │
+ │   │                     │         │     user_ids, group_ids        │      │
+ │   │  Timer trigger      │         │     IsDeleted, purview_*       │      │
+ │   │  every 1h           │         │     sharepoint_web_url         │      │
+ │   └─────────────────────┘         └──────────────┬────────────────┘      │
+ │                                                  │ 3. Shared Private     │
+ │                                                  │    Link (pull)        │
+ │                                                  ▼                       │
+ │                                    ┌───────────────────────────────┐     │
+ │                                    │  Azure AI Search              │     │
+ │                                    │   - Indexer (hourly, private) │     │
+ │                                    │   - Skillset: OCR → merge →   │     │
+ │                                    │     chunk → Azure OpenAI      │     │
+ │                                    │     embeddings                │     │
+ │                                    │   - Index: sharepoint-index   │     │
+ │                                    └──────────────┬────────────────┘     │
+ │                                                   │ 4. query             │
+ │                                                   ▼                      │
+ │                                    ┌───────────────────────────────┐     │
+ │                                    │  Foundry Agent                │     │
+ │                                    │  (azure_ai_search tool)       │     │
+ │                                    │  → url_citation back to       │     │
+ │                                    │    the SharePoint page        │     │
+ │                                    └───────────────────────────────┘     │
+ └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### What the Pipeline Does
+Four logical stages: **(1) pull from SharePoint**, **(2) stage in Blob**, **(3) index into AI Search**, **(4) query from Foundry**. Every hop is private except the first one — which is why it has to go through the Azure Firewall with explicit FQDN allow rules (`*.sharepoint.com`, `graph.microsoft.com`, `login.microsoftonline.com`).
 
-1. **Syncs files** from SharePoint to Azure Blob Storage (with metadata and permissions)
-2. **Extracts SharePoint ACLs** — per-document access control lists
-3. **Indexes content** in Azure AI Search with OCR, chunking, and optional vector embeddings
-4. **Enables secure RAG** — Foundry agents search SharePoint content with permission enforcement
-5. (Optional) **Purview integration** — dual-layer ACLs: SharePoint permissions ∩ Purview RMS
+### 14.3 Ingest Flow — How Create / Update / Delete Propagate
 
-### Prerequisites
+The sync runs on a **timer-triggered Azure Function** (default: every hour). Every run performs **two independent reconciliations**: Blob ↔ SharePoint, and Index ↔ Blob.
+
+#### Stage 1 — SharePoint → Blob (the Function App)
+
+The Function App supports two change-detection modes, chosen by the `PERMISSIONS_DELTA_MODE` env var:
+
+| Mode | How it detects changes | Good for |
+|------|------------------------|----------|
+| `hash` *(default)* | Full-list every file in the SharePoint drive; compare `last_modified` + SHA256 of content/permissions against the corresponding blob's metadata. Write only what differs. | Small/medium libraries, simplest setup, no state to manage |
+| `graph_delta` | Use Microsoft Graph **delta API** with a saved delta token; Graph only returns items added/modified/deleted since last run. Permission deltas use the `Prefer: deltashowsharingchanges` header. | Large libraries with frequent churn |
+
+Regardless of mode, here is what each event does:
+
+| SharePoint event | What the Function writes to Blob | Effect on the index (next indexer run) |
+|---|---|---|
+| **File created** | `PUT` new blob, metadata includes `user_ids`, `group_ids`, `sharepoint_web_url`, `purview_*` | Indexer sees a new blob → OCR → chunk → embed → add document(s) to index |
+| **File content edited** | `PUT` overwrite blob (new ETag / `last_modified`) | Indexer's change tracker notices the new `last_modified` → re-chunks and replaces all chunks for that file |
+| **File metadata only changed** (e.g. permissions changed in SharePoint) | `PUT` overwrite blob with new `user_ids` / `group_ids` metadata (content identical) | Indexer still re-processes because `last_modified` advanced → ACL fields refreshed in the index |
+| **File renamed / moved** | Old blob gets `IsDeleted=true` metadata, new blob written at new path | Old chunks tombstoned + new chunks added (see soft-delete below) |
+| **File deleted in SharePoint** | Existing blob patched with metadata `IsDeleted=true` (`hash` mode uses orphan detection; `graph_delta` mode reads the delete event) | Indexer's **soft-delete detection policy** removes all chunks for that blob |
+
+> **Important nuance:** the pipeline does **not physically delete blobs** by default. It marks them with `IsDeleted=true` so AI Search can remove them from the index on the next pass. This gives you an audit trail and lets you replay the index. Set `DELETE_ORPHANED_BLOBS=true` on the Function App if you want physical deletion.
+
+#### Stage 2 — Blob → AI Search Index (the indexer)
+
+The indexer is configured in [3-deploy-sharepoint-sync.sh#L1005-L1019](deployment/3-deploy-sharepoint-sync.sh#L1005) with:
+
+```jsonc
+{
+  "type": "azureblob",
+  "dataDeletionDetectionPolicy": {
+    "@odata.type": "#Microsoft.Azure.Search.SoftDeleteColumnDeletionDetectionPolicy",
+    "softDeleteColumnName": "IsDeleted",     // blob metadata key
+    "softDeleteMarkerValue": "true"
+  }
+}
+```
+
+Behaviour:
+
+- **Change tracking** — Azure Blob indexers use `LastModified` by default; only blobs whose `LastModified` advanced since the last indexer high-water-mark are re-processed.
+- **Soft-delete** — any blob carrying `IsDeleted=true` in its metadata causes **all index documents produced from that blob** (one per chunk) to be removed on the next indexer run.
+- **Private execution** — the indexer runs in a **private execution environment** (`"executionEnvironment": "private"`) and reaches Blob through a **Shared Private Link**, so the Storage account can stay firewalled.
+
+#### End-to-end timing
+
+```
+T+0:00  File updated in SharePoint
+T+0..60 Function timer fires → writes/updates blob
+T+0..60 Indexer schedule fires → re-chunks + re-embeds + refreshes index
+T≈2h    Worst-case latency for a SharePoint edit to appear in agent answers
+```
+
+Both schedules are independent (both default to hourly). Tighten them, or trigger the Function manually from the portal for immediate sync.
+
+### 14.4 What Ends Up in the Index — Schema & ACL Model
+
+The script provisions an index called `sharepoint-index` with the following shape (see [3-deploy-sharepoint-sync.sh#L949-L961](deployment/3-deploy-sharepoint-sync.sh#L949)):
+
+| Field | Type | Role | Populated from |
+|---|---|---|---|
+| `chunk_id` | `Edm.String` (key) | Unique ID of the text chunk | Generated by the chunking skill |
+| `chunk` | `Edm.String` | The actual text content fed to the LLM | `/document/pages/*` |
+| `title` | `Edm.String` | File name (display + semantic ranking) | `metadata_storage_name` |
+| `url` | `Edm.String` | **Citation target** — the SharePoint web URL of the source document | Blob metadata `sharepoint_web_url` |
+| `acl_user_ids` | `Edm.String` (filterable) | Space-separated list of **Entra Object IDs** (users) with access | Blob metadata `user_ids` |
+| `acl_group_ids` | `Edm.String` (filterable) | Space-separated list of **Entra Group Object IDs** with access | Blob metadata `group_ids` |
+| `purview_label_name` | `Edm.String` (filterable) | Sensitivity label display name, e.g. `Confidential` | Blob metadata `purview_label_name` |
+| `purview_is_encrypted` | `Edm.String` (filterable) | `"true"` if RMS-encrypted | Blob metadata `purview_is_encrypted` |
+| `purview_protection_status` | `Edm.String` (filterable) | `unprotected` / `protected` / `label_only` / `unknown` | Blob metadata `purview_protection_status` |
+| `text_vector` | `Collection(Edm.Single)` | Embedding of `chunk` (vector search) | Azure OpenAI embedding skill |
+
+#### What `acl_user_ids` and `acl_group_ids` actually contain
+
+These are **NOT** POSIX `uid` / `gid`. SharePoint itself does not expose Unix-style IDs. The Function App resolves each SharePoint permission principal to its **Entra ID (Azure AD) Object ID** — a GUID like `a1b2c3d4-5678-...` — and stores them as a **space-separated string** in the field so they can be matched by `search.ismatch()`.
+
+Example of a single index document:
+
+```json
+{
+  "chunk_id": "aHR0cHM6Ly9...=-chunk-3",
+  "title": "Data-Retention-Policy.docx",
+  "chunk": "Records must be retained for a minimum of 7 years...",
+  "url": "https://contoso.sharepoint.com/sites/Legal/Shared%20Documents/Data-Retention-Policy.docx",
+  "acl_user_ids":  "a1b2c3d4-5678-90ab-cdef-111111111111 99887766-5544-3322-1100-aabbccddeeff",
+  "acl_group_ids": "55667788-9900-aabb-ccdd-eeff00112233",
+  "purview_label_name": "Internal",
+  "purview_is_encrypted": "false",
+  "purview_protection_status": "label_only"
+}
+```
+
+#### Optional Purview "dual layer" ACL
+
+When `SYNC_PURVIEW_PROTECTION=true`, the effective ACL written to the blob is **`SharePoint permissions ∩ Purview RMS permissions`** — i.e. a user must be allowed **both** in SharePoint and in the RMS policy. The intersection is computed in the Function App and collapsed back into `user_ids` / `group_ids` metadata, so the index schema does not change. See the [upstream Purview guide](https://github.com/Azure-Samples/sharepoint-foundryIQ-secure-sync/blob/main/docs/purview-rms-explained.md) for the full matrix.
+
+### 14.5 How the Foundry Agent "Knows" About Permissions — Spoiler: It Doesn't, Not by Itself
+
+This is the most misunderstood part of the whole pipeline, so read carefully.
+
+**The index contains the ACL fields. Foundry does not enforce them.**
+
+When you wire an AI Search index to a Foundry agent (either via a Knowledge Source or the `azure_ai_search` tool), the agent authenticates to AI Search using **its own identity** (a managed identity or API key). AI Search has no idea who the end user is. It cannot do anything with `acl_user_ids` unless **your application layer tells it to**.
+
+There are three patterns — use exactly one:
+
+#### Pattern A — Custom pre-filtered RAG *(recommended; what [agent-tool/Program.cs](agent-tool/Program.cs) implements)*
+
+```
+End user ──Entra ID token──▶  Your app/API
+                                 │
+                                 │ 1. Extract user.oid + group IDs (from token / Graph)
+                                 │ 2. Build $filter:
+                                 │      search.ismatch('<user-oid>','acl_user_ids')
+                                 │      or search.ismatch('<grp1>', 'acl_group_ids') or ...
+                                 ▼
+                             AI Search  ──▶ returns only chunks this user may see
+                                 │
+                                 ▼
+                             Foundry Agent (receives the filtered chunks as context)
+                                 │
+                                 ▼
+                             Answer + citation URLs → end user
+```
+
+Key properties:
+- Agent never sees forbidden chunks → cannot leak them.
+- Works with `azure_ai_search` tool **or** with your own orchestration.
+- Needs an app layer that runs **as the user** (Entra ID OBO / delegated auth) to get their OID + groups.
+
+Minimal filter construction:
+
+```csharp
+// user.oid from the JWT, groupIds from Graph /me/transitiveMemberOf
+var clauses = new List<string>();
+clauses.Add($"search.ismatch('{userOid}','acl_user_ids')");
+clauses.AddRange(groupIds.Select(g => $"search.ismatch('{g}','acl_group_ids')"));
+var filter = string.Join(" or ", clauses);
+
+var results = await searchClient.SearchAsync<SearchDocument>(
+    query,
+    new SearchOptions { Filter = filter, Size = 10 });
+```
+
+#### Pattern B — Function tool on the agent
+
+Register an Azure Function as a **tool** on the Foundry agent. The function receives the user's bearer token via `authentication.invokeUserToken`, resolves OID + groups, queries AI Search with the ACL filter, and returns results. The agent still picks *when* to call it; the function guarantees the *content* is already filtered.
+
+Trade-off vs. Pattern A: the agent sees the tool call in its trace (more transparent, easier to debug) but you now have to harden the Function (rate limits, token validation, etc.).
+
+#### Pattern C — Knowledge Source (NOT recommended for secured SharePoint data)
+
+Wiring the index as a "Knowledge Source" in the Foundry portal is the easiest path but it:
+
+- Runs the search as the agent's identity → **no ACL enforcement at all**.
+- Returns only `ref_id`, `title`, `content` to the LLM — the `url`, `acl_*`, and `purview_*` fields are stripped by the KB MCP wrapper.
+- Makes citation URLs point at the Foundry MCP endpoint, not at the SharePoint document.
+
+Use this **only** when every agent user is allowed to see every synced document (e.g. a fully public knowledge base). For permission-scoped content, you *must* use Pattern A or B.
+
+See [§14.7 below](#147-azure_ai_search-tool-vs-knowledge-source--why-we-picked-the-tool) for the detailed comparison that led to this choice.
+
+### 14.6 Verifying That ACLs Landed Correctly
+
+From a jumpbox inside the VNet (so the Search private endpoint resolves):
+
+```bash
+SEARCH_NAME=<your-search>      # e.g. aisearch-foundry
+SEARCH_KEY=$(az search admin-key show -n "$SEARCH_NAME" -g "$SPOKE_RG" --query primaryKey -o tsv)
+MY_OID=$(az ad signed-in-user show --query id -o tsv)
+API=2024-07-01
+
+# 1. Peek at ACL values on a few docs
+curl -s "https://$SEARCH_NAME.search.windows.net/indexes/sharepoint-index/docs?api-version=$API&\$top=3&\$select=title,acl_user_ids,acl_group_ids,url" \
+  -H "api-key: $SEARCH_KEY" | jq
+
+# 2. Filter as yourself — should return everything you can access in SharePoint
+curl -s "https://$SEARCH_NAME.search.windows.net/indexes/sharepoint-index/docs?api-version=$API&\$filter=search.ismatch('$MY_OID','acl_user_ids')&\$select=title,url" \
+  -H "api-key: $SEARCH_KEY" | jq
+
+# 3. Filter as a fake OID — should return 0 results
+curl -s "https://$SEARCH_NAME.search.windows.net/indexes/sharepoint-index/docs?api-version=$API&\$filter=search.ismatch('00000000-0000-0000-0000-000000000000','acl_user_ids')&\$select=title" \
+  -H "api-key: $SEARCH_KEY" | jq
+```
+
+If (2) returns the documents you expect and (3) returns zero, your ACL pipeline is correct and ready to be enforced by Pattern A or B.
+
+### 14.7 `azure_ai_search` Tool vs. Knowledge Source — Why We Picked the Tool
+
+Foundry gives you two ways to ground an agent in an AI Search index. The deploy script uses the **`azure_ai_search` built-in tool**, not a **Knowledge Source**. This is a deliberate design decision — here is why.
+
+#### The two options
+
+```
+Option 1 — Knowledge Source (via Knowledge Base MCP)
+┌───────┐    ┌──────────────┐    ┌─────────────────┐    ┌──────────┐
+│ Agent │───▶│  KB MCP Tool │───▶│ Knowledge Source│───▶│ AI Search│
+└───────┘    │ (Foundry-    │    │ (wrapper on top │    └──────────┘
+             │  managed)    │    │  of the index)  │
+             └──────────────┘    └─────────────────┘
+
+Option 2 — azure_ai_search built-in tool (what this script deploys)
+┌───────┐    ┌─────────────────┐    ┌──────────┐
+│ Agent │───▶│ azure_ai_search │───▶│ AI Search│
+└───────┘    │ built-in tool   │    └──────────┘
+             └─────────────────┘
+```
+
+#### Side-by-side comparison
+
+| Aspect | Knowledge Source (KB MCP) | `azure_ai_search` Tool |
+|---|---|---|
+| **Citation URL** | Points to the **Foundry MCP endpoint** (`https://...services.ai.azure.com/api/projects/.../mcp`) — useless for the end user | Points to the **actual document URL** from the index's `url` field (e.g. the SharePoint page) |
+| **Fields returned to the LLM** | Only `ref_id`, `title`, `content` — hard-coded. `sourceDataFields` config is **silently ignored** | **All retrievable fields** in the index (`url`, `acl_user_ids`, `purview_label_name`, etc.) |
+| **Query control** | Limited — the KB decides how to query | Full control: `query_type` (simple / semantic / vector), filters, top K |
+| **ACL filtering** | Not possible — no way to pass a `$filter` | Possible via the `filter` parameter |
+| **Output modes** | `extractiveData` or `answerSynthesis` (neither exposes `url`) | Raw search results; the LLM formats them |
+| **Abstraction layers** | Extra hop through Foundry's KB service | Direct — fewer moving parts to debug |
+| **When it shines** | Multi-source RAG where Foundry should orchestrate SharePoint + web + files | Single-index scenarios where you want full control + proper citations |
+
+#### Why we switched (concrete reason)
+
+Originally the script used a Knowledge Source. Then the question came up: *"why does the citation link go to the MCP endpoint instead of the SharePoint doc?"*
+
+We tried every workaround:
+
+1. Added `url` to the index — ✅ populated correctly with SharePoint document URLs
+2. Added `sourceDataFields: [{name:"url"}]` to the Knowledge Source — ✅ API accepted it, but ❌ **no effect on MCP output**
+3. Tested both `outputMode: extractiveData` and `answerSynthesis` — both still return only `ref_id, title, content`
+4. Inspected the raw MCP tool response directly — confirmed Foundry's KB service strips everything except those 3 fields
+
+**Conclusion:** with Knowledge Source there is no way to get the document URL into the citation. It is a hard limitation of the KB MCP wrapper today.
+
+The `azure_ai_search` tool bypasses the KB entirely. The agent receives raw search documents, the LLM sees the `url` field, and Foundry renders it as a native `url_citation` annotation pointing to the real document.
+
+#### Bonus: enables per-user ACL filtering
+
+The `azure_ai_search` tool also unlocks [Pattern A from §14.5](#145-how-the-foundry-agent-knows-about-permissions--spoiler-it-doesnt-not-by-itself) — per-user access control via a `filter` clause like `search.ismatch('<user-oid>','acl_user_ids')`. With a Knowledge Source this is not possible at all.
+
+#### When you would go back to Knowledge Source
+
+- **Multi-source RAG** — blend SharePoint + Confluence + web search and let Foundry orchestrate across them
+- **You do not care about citation URLs** — e.g. internal-only bot where users do not click through to sources
+- **You want Foundry to handle query reformulation and answer synthesis automatically**
+
+For the SharePoint use case (citations must link back to the original documents), `azure_ai_search` is objectively the right choice.
+
+### 14.8 Prerequisites
 
 Before deploying, you need:
 
@@ -1288,7 +1575,7 @@ Before deploying, you need:
    - A client secret generated
 3. **Azure Functions Core Tools** installed: `npm i -g azure-functions-core-tools@4`
 
-### Deploy the SharePoint Sync Layer
+### 14.9 Deploy the SharePoint Sync Layer
 
 > **⚠️ IMPORTANT: Run from inside the VNet!**
 >
@@ -1303,7 +1590,50 @@ cp sharepoint-sync.env.example sharepoint-sync.env   # Fill in your values
 ./3-deploy-sharepoint-sync.sh
 ```
 
-### What It Deploys
+### 14.10 Customer-Environment Configuration (optional overrides)
+
+The script has a **Step 0 auto-discovery** phase that adapts to pre-existing infrastructure. In most customer environments the hub, spoke VNet, route tables, firewall, and private DNS zones are already built by the networking team — you just need the sync layer on top. Discovery finds them automatically; overrides are only needed if discovery fails or if you want to pin specific resources.
+
+| Variable | Default / Behavior | When to set it |
+|----------|--------------------|----------------|
+| `UDR_NAME` | Auto-discovered from an existing spoke subnet that routes `0.0.0.0/0` to `FW_PRIVATE_IP` | Multiple candidate UDRs or discovery can't see the route table |
+| `SPOKE_PE_SUBNET_NAME` | `pe-subnet` | Customer uses a different subnet name for private endpoints |
+| `DNS_SUBSCRIPTION` | Same subscription as the deployment | **Private DNS zones live in a central Connectivity/Hub subscription** (very common in enterprise landing zones) |
+| `FW_MODE` | `azure` | Set to **`external`** if the customer uses a **3rd-party firewall** (Fortinet, Palo Alto, Check Point). Script prints the required FQDNs for you to allow manually and skips all Azure FW calls |
+| `FW_POLICY_NAME` / `FW_POLICY_RG` | `hub-fw-policy` / `HUB_RG` | Azure Firewall policy lives in a different RG or has a different name |
+| `FW_RCG_NAME` / `FW_RCG_PRIORITY` | `DefaultAppRuleGroup` / `300` | Customer uses a different rule-collection-group layout |
+| `SEARCH_ACCESS_MODE` | `toggle-public` | Set to **`private`** if Azure Policy **denies `publicNetworkAccess` changes** on AI Search (common deny-policy in production landing zones). In `private` mode the script talks to AI Search via its private endpoint — **you must be connected to the VNet** (VPN, bastion, jumpbox, or self-hosted CI runner) |
+
+**Real customer-env example (script output):**
+```
+──── Step 0: Auto-Discovery ────
+  ✅ UDR discovered: spoke4-to-fw-udr (inherited from vm-subnet)
+  ✅ PE subnet: pe-subnet
+  ✅ DNS zone privatelink.blob.core.windows.net        → RG: foundry-private-new
+  ✅ DNS zone privatelink.file.core.windows.net        → RG: private-foundry-hub
+  ✅ DNS zone privatelink.vaultcore.azure.net          → RG: private-foundry-hub
+  ✅ DNS zone privatelink.search.windows.net           → RG: foundry-private-new
+  ✅ DNS zone privatelink.cognitiveservices.azure.com  → RG: foundry-private-new
+  ✅ DNS zone privatelink.openai.azure.com             → RG: foundry-private-new
+  ℹ️  DNS zone privatelink.queue.core.windows.net not found — auto-creating in spoke4-foundry-deny
+  ℹ️  DNS zone privatelink.table.core.windows.net not found — auto-creating in spoke4-foundry-deny
+  ✅ Firewall policy: hub-fw-policy (RG: private-foundry-hub)
+```
+
+Notice how DNS zones are spread across **two resource groups** (`foundry-private-new` and `private-foundry-hub`) — discovery handles this automatically. Workload-local zones (`queue`/`table` used only by Function Storage) are auto-created in the spoke RG if missing, so network teams don't need to pre-provision them.
+
+**3rd-party firewall example** (`FW_MODE=external`):
+```
+──── Step 12: Firewall Rules (SKIPPED — FW_MODE=external) ────
+  ⚠️  Azure Firewall rule creation skipped.
+  You must allow the following egress FQDNs on your 3rd-party firewall
+  (source: spoke address space 10.230.0.0/16, dest: HTTPS/443):
+     - graph.microsoft.com
+     - login.microsoftonline.com
+     - *.sharepoint.com
+```
+
+### 14.11 What It Deploys
 
 | Resource | Purpose | Network |
 |----------|---------|---------|
@@ -1316,8 +1646,9 @@ cp sharepoint-sync.env.example sharepoint-sync.env   # Fill in your values
 | AI Search Indexer | Hourly, private execution environment | Via Shared Private Link |
 | Shared Private Link | AI Search → Storage (blob) | Managed PE from Search |
 | Firewall Rule | `AllowSharePointSync` | `*.sharepoint.com`, `graph.microsoft.com` |
+| Foundry Agent | `azure_ai_search` tool → `sharepoint-index` | Internal (AI Services) |
 
-### How Secrets Are Handled
+### 14.12 How Secrets Are Handled
 
 The deployment uses **Key Vault references** — secrets are never stored as plain text in Function App settings:
 
@@ -1332,18 +1663,7 @@ SEARCH_API_KEY                       → @Microsoft.KeyVault(SecretUri=.../searc
 
 The Function App's managed identity has `Key Vault Secrets User` role — it can read secrets but not modify them.
 
-### Data Flow
-
-```
-1. Timer trigger (hourly) or manual invoke
-2. Function App → Graph API (via firewall: *.sharepoint.com, graph.microsoft.com)
-3. Downloads files + extracts permissions + sensitivity labels
-4. Writes to Blob Storage (via private endpoint)
-5. AI Search indexer (hourly, private execution) picks up new/changed blobs
-6. Foundry Agent queries AI Search → returns answers grounded in SharePoint docs
-```
-
-### Post-Deployment Steps
+### 14.13 Post-Deployment Steps
 
 1. **Approve the Shared Private Link** (if auto-approve failed):
    Portal → Storage Account → Networking → Private endpoint connections → Approve
@@ -1361,9 +1681,9 @@ The Function App's managed identity has `Key Vault Secrets User` role — it can
    az search service update --name <search-name> -g <rg> --public-access disabled
    ```
 
-4. **Create a Knowledge Source in Foundry** — connect the `sharepoint-index` to your agent for grounded answers
+4. **Agent is configured automatically** — Step 14 of the deploy script creates a Foundry agent with the `azure_ai_search` tool wired to `sharepoint-index`. Citation URLs in agent responses link directly to the SharePoint documents.
 
-### Troubleshooting
+### 14.14 Troubleshooting
 
 | Issue | Cause | Fix |
 |-------|-------|-----|
@@ -1371,112 +1691,6 @@ The Function App's managed identity has `Key Vault Secrets User` role — it can
 | Indexer fails: "Unable to retrieve blob container" | SPL not approved or MI missing RBAC | Approve SPL on Storage → Networking. Grant AI Search MI `Storage Blob Data Reader` on Storage |
 | Key Vault secret resolution fails (Function 500s) | KV PE not registered in DNS, or RBAC delay | Check DNS zone link. Wait 5 min for RBAC propagation |
 | Indexer status shows `transientFailure` | Not using private execution environment | Set `"executionEnvironment": "private"` on the indexer |
-
-### ACL Enforcement & On-Behalf-Of (OBO) — Current Gap and Options
-
-#### The Problem
-
-The SharePoint sync pipeline stores per-document ACLs in the AI Search index — fields like `acl_user_ids` and `acl_group_ids` contain the Entra Object IDs of users and groups that have access to each document. However, **Azure AI Foundry agents do NOT enforce these ACLs out of the box**.
-
-When you connect an AI Search index to a Foundry agent as a **Knowledge Source** (via the Foundry portal UI), the agent queries AI Search using **its own managed identity** — not the end user's identity. There is no On-Behalf-Of (OBO) flow. The ACL fields are stored in the index but completely ignored during retrieval.
-
-This means: **every user who talks to the agent sees answers from all documents**, regardless of their SharePoint permissions.
-
-#### Why OBO Doesn't Work Here
-
-```
-What you might expect (OBO):
-  User → Foundry Agent → AI Search (as the user) → filtered by user's ACL ❌
-
-What actually happens:
-  User → Foundry Agent → AI Search (as agent's managed identity) → returns ALL docs ⚠️
-```
-
-The Foundry agent authenticates to AI Search using a connection credential (managed identity or API key). It has no concept of "the current user" when making search queries, and AI Search has no way to know who the original caller is.
-
-#### Option A: Custom Pre-Filtered RAG (Recommended)
-
-Build a custom application layer that intercepts the user's query, filters AI Search results by ACL, and passes only permitted documents to the agent as context. This is the approach used in the [original repo's agent-tool](https://github.com/Azure-Samples/sharepoint-foundryIQ-secure-sync/blob/main/infra/deploy-private/agent-tool/Program.cs) (also copied to [agent-tool/Program.cs](agent-tool/Program.cs) in this repo).
-
-```
-User (authenticated via Entra ID)
-  │
-  ▼
-Custom App / API (resolves user OID + group memberships via Graph API)
-  │
-  ▼
-AI Search query with ACL filter:
-  search.ismatch('user-oid', 'acl_user_ids') OR search.ismatch('group-id', 'acl_group_ids')
-  │
-  ▼
-Only permitted documents returned
-  │
-  ▼
-Foundry Agent receives filtered docs as context → generates grounded answer
-```
-
-**How it works:**
-1. User authenticates to your app (Entra ID)
-2. App resolves the user's Object ID and group memberships via Microsoft Graph
-3. App queries AI Search with an `$filter` clause that matches the user's OID/groups against `acl_user_ids` / `acl_group_ids`
-4. App passes only the permitted document chunks as context to the Foundry agent
-5. Agent generates an answer grounded only in documents the user is allowed to see
-
-**Key code pattern** (from the original repo):
-```csharp
-// Build ACL filter for the authenticated user
-string aclFilter = string.Join(" or ",
-    userIds.Select(id => $"search.ismatch('{id}', 'acl_user_ids')").Concat(
-    groupIds.Select(id => $"search.ismatch('{id}', 'acl_group_ids')")));
-
-// Query AI Search with the ACL filter applied
-var results = await searchClient.SearchAsync<SearchDocument>(query,
-    new SearchOptions { Filter = aclFilter });
-```
-
-#### Option B: Custom Function Tool on the Agent
-
-Register a custom Azure Function as a **tool** on the Foundry agent. The function receives the user's identity token, resolves their permissions, queries AI Search with the ACL filter, and returns filtered results. The agent calls this tool instead of the built-in Knowledge Source.
-
-```
-User → Foundry Agent → calls "search_documents" tool → Azure Function
-  │                                                        │
-  │                                                        ▼
-  │                                            Validates user token,
-  │                                            queries AI Search with ACL filter,
-  │                                            returns permitted docs only
-  │                                                        │
-  └── Agent generates answer from filtered results ◄───────┘
-```
-
-This approach keeps the agent in Foundry but delegates search to your ACL-aware function.
-
-#### Option C: Wait for Native OBO Support
-
-Microsoft may add native OBO support to Foundry agents in the future, where the agent would pass the user's identity through to AI Search. As of now, this is not available.
-
-#### Testing That ACLs Work in Your Index
-
-Even though the agent doesn't enforce ACLs, you can verify the ACL fields are correctly populated and filterable. Run these from your jumpbox VM inside the VNet:
-
-```bash
-# 1. Get your Entra Object ID
-MY_OID=$(az ad signed-in-user show --query id -o tsv)
-
-# 2. Query docs to see ACL values
-curl -s "https://<search-name>.search.windows.net/indexes/sharepoint-index/docs?api-version=2024-07-01&\$top=3&\$select=title,acl_user_ids,acl_group_ids" \
-  -H "api-key: $SEARCH_KEY" | python3 -m json.tool
-
-# 3. Filter with YOUR OID — should return documents you have access to
-curl -s "https://<search-name>.search.windows.net/indexes/sharepoint-index/docs?api-version=2024-07-01&\$filter=search.ismatch('$MY_OID','acl_user_ids')&\$select=title" \
-  -H "api-key: $SEARCH_KEY" | python3 -m json.tool
-
-# 4. Filter with a FAKE OID — should return 0 results
-curl -s "https://<search-name>.search.windows.net/indexes/sharepoint-index/docs?api-version=2024-07-01&\$filter=search.ismatch('00000000-0000-0000-0000-000000000000','acl_user_ids')&\$select=title" \
-  -H "api-key: $SEARCH_KEY" | python3 -m json.tool
-```
-
-If step 3 returns your documents and step 4 returns zero — your ACLs are stored correctly and ready for enforcement via Option A or B.
 
 ---
 
