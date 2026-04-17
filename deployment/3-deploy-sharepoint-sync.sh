@@ -318,21 +318,39 @@ echo ""
 ###############################################################################
 echo "──── Step 1: Creating Function Subnet ────"
 
-az network vnet subnet create \
-  --resource-group "$SPOKE_RG" \
-  --vnet-name "$SPOKE_VNET_NAME" \
-  --name "$FUNC_SUBNET_NAME" \
-  --address-prefix "$FUNC_SUBNET_PREFIX" \
-  --delegations "Microsoft.Web/serverFarms" \
-  --output none
+# Flex Consumption uses delegation Microsoft.App/environments (set by the
+# platform via a serviceAssociationLink when the FA is created). When the
+# subnet already exists (re-run), don't touch the delegation — it would fail
+# with "SubnetMissingRequiredDelegation" if Flex has already attached a SAL.
+if az network vnet subnet show \
+     --resource-group "$SPOKE_RG" \
+     --vnet-name "$SPOKE_VNET_NAME" \
+     --name "$FUNC_SUBNET_NAME" -o none 2>/dev/null; then
+  echo "  ℹ️  Subnet $FUNC_SUBNET_NAME exists — preserving delegation, updating UDR only"
+  az network vnet subnet update \
+    --resource-group "$SPOKE_RG" \
+    --vnet-name "$SPOKE_VNET_NAME" \
+    --name "$FUNC_SUBNET_NAME" \
+    --route-table "$UDR_NAME" \
+    --output none
+else
+  # First-time create: use Microsoft.App/environments (Flex delegation)
+  az network vnet subnet create \
+    --resource-group "$SPOKE_RG" \
+    --vnet-name "$SPOKE_VNET_NAME" \
+    --name "$FUNC_SUBNET_NAME" \
+    --address-prefix "$FUNC_SUBNET_PREFIX" \
+    --delegations "Microsoft.App/environments" \
+    --output none
 
-# Apply existing UDR so func traffic routes through firewall
-az network vnet subnet update \
-  --resource-group "$SPOKE_RG" \
-  --vnet-name "$SPOKE_VNET_NAME" \
-  --name "$FUNC_SUBNET_NAME" \
-  --route-table "$UDR_NAME" \
-  --output none
+  # Apply existing UDR so func traffic routes through firewall
+  az network vnet subnet update \
+    --resource-group "$SPOKE_RG" \
+    --vnet-name "$SPOKE_VNET_NAME" \
+    --name "$FUNC_SUBNET_NAME" \
+    --route-table "$UDR_NAME" \
+    --output none
+fi
 
 echo "  ✅ Subnet: $FUNC_SUBNET_NAME ($FUNC_SUBNET_PREFIX) with UDR → $FW_PRIVATE_IP"
 echo ""
@@ -509,31 +527,10 @@ FUNC_SUBNET_ID=$(az network vnet subnet show \
   --name "$FUNC_SUBNET_NAME" \
   --query id -o tsv)
 
-# Create Flex Consumption plan (SKU = FC1)
-if az functionapp plan show -n "$FUNC_PLAN_NAME" -g "$SPOKE_RG" -o none 2>/dev/null; then
-  echo "  ℹ️  Plan $FUNC_PLAN_NAME exists — reusing"
-else
-  az functionapp plan create \
-    --name "$FUNC_PLAN_NAME" \
-    --resource-group "$SPOKE_RG" \
-    --location "$LOCATION" \
-    --flex-consumption-location "$LOCATION" \
-    --sku FC1 \
-    --is-linux true \
-    --output none 2>/dev/null || \
-  az functionapp plan create \
-    --name "$FUNC_PLAN_NAME" \
-    --resource-group "$SPOKE_RG" \
-    --location "$LOCATION" \
-    --sku FC1 \
-    --is-linux true \
-    --output none
-fi
-
-PLAN_ID=$(az functionapp plan show \
-  --name "$FUNC_PLAN_NAME" \
-  --resource-group "$SPOKE_RG" \
-  --query id -o tsv)
+# Flex Consumption: DO NOT pre-create the plan. `az functionapp plan create`
+# does not accept --sku FC1 in current CLI versions. Instead, pass
+# --flexconsumption-location on `az functionapp create` and the plan is
+# created implicitly. We retrieve the generated plan name from the FA after.
 
 # Deployment storage container (required by Flex) — create in the FA storage account
 FUNC_DEPLOY_CONTAINER="app-package-${FUNC_APP_NAME:0:30}"
@@ -545,7 +542,7 @@ az storage container create \
 
 FUNC_STORAGE_BLOB_URL="https://${FUNC_STORAGE_NAME}.blob.core.windows.net/${FUNC_DEPLOY_CONTAINER}"
 
-# Create Flex Consumption function app via CLI (handles FC1 complexity)
+# Create Flex Consumption function app (plan is created implicitly)
 if az functionapp show -n "$FUNC_APP_NAME" -g "$SPOKE_RG" -o none 2>/dev/null; then
   echo "  ℹ️  Function App $FUNC_APP_NAME exists — reusing"
 else
@@ -556,29 +553,17 @@ else
     if az functionapp create \
       --name "$FUNC_APP_NAME" \
       --resource-group "$SPOKE_RG" \
-      --plan "$FUNC_PLAN_NAME" \
-      --storage-account "$FUNC_STORAGE_NAME" \
+      --flexconsumption-location "$LOCATION" \
       --runtime python \
       --runtime-version 3.11 \
-      --flexconsumption-location "$LOCATION" \
+      --storage-account "$FUNC_STORAGE_NAME" \
       --assign-identity "[system]" \
+      --vnet "$SPOKE_VNET_NAME" \
+      --subnet "$FUNC_SUBNET_NAME" \
       --deployment-storage-name "$FUNC_STORAGE_NAME" \
       --deployment-storage-container-name "$FUNC_DEPLOY_CONTAINER" \
       --deployment-storage-auth-type UserAssignedIdentity 2>/tmp/fa-create.err; then
       echo "  ✅ Function App created (attempt $CREATE_ATTEMPT)"
-      break
-    fi
-    # Fall back: try without --flexconsumption-location (older az CLI)
-    if az functionapp create \
-      --name "$FUNC_APP_NAME" \
-      --resource-group "$SPOKE_RG" \
-      --plan "$FUNC_PLAN_NAME" \
-      --storage-account "$FUNC_STORAGE_NAME" \
-      --runtime python \
-      --runtime-version 3.11 \
-      --assign-identity "[system]" \
-      --functions-version 4 2>/tmp/fa-create.err; then
-      echo "  ✅ Function App created via fallback (attempt $CREATE_ATTEMPT)"
       break
     fi
     ERR_MSG=$(cat /tmp/fa-create.err || true)
@@ -592,6 +577,13 @@ else
     sleep 30
   done
 fi
+
+# Retrieve the implicitly-created Flex plan name (for reference / later steps)
+FUNC_PLAN_NAME=$(az functionapp show -n "$FUNC_APP_NAME" -g "$SPOKE_RG" \
+  --query "serverFarmId" -o tsv | awk -F/ '{print $NF}')
+PLAN_ID=$(az functionapp show -n "$FUNC_APP_NAME" -g "$SPOKE_RG" \
+  --query "serverFarmId" -o tsv)
+echo "  ℹ️  Flex plan: $FUNC_PLAN_NAME"
 
 # Enable VNet integration (Flex supports it, but not via --subnet in create)
 az functionapp vnet-integration add \
@@ -764,6 +756,7 @@ az functionapp config appsettings set \
     "EMBEDDING_MODEL_NAME=${EMBEDDING_MODEL_NAME}" \
     "EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS}" \
     "SUBSCRIPTION_ID=$SUBSCRIPTION" \
+    "TIMER_SCHEDULE=${TIMER_SCHEDULE:-0 0 * * * *}" \
   --output none
 
 echo "  ✅ Function App settings configured"
@@ -1482,19 +1475,25 @@ else
       echo "  Using connection: $SEARCH_CONNECTION_ID"
 
       # Create agent version with azure_ai_search tool
-      AGENT_BODY=$(python3 -c "
-import json
+      # Pass instructions via env var to avoid shell/Python quoting issues
+      # (instructions may contain single quotes like "don't")
+      AGENT_BODY=$(AGENT_INSTRUCTIONS_ENV="$AGENT_INSTRUCTIONS" \
+        AGENT_MODEL_ENV="$AGENT_MODEL" \
+        SEARCH_CONNECTION_ID_ENV="$SEARCH_CONNECTION_ID" \
+        INDEX_NAME_ENV="$IDX" \
+        python3 -c "
+import json, os
 body = {
     'definition': {
         'kind': 'prompt',
-        'model': '${AGENT_MODEL}',
-        'instructions': '${AGENT_INSTRUCTIONS}',
+        'model': os.environ['AGENT_MODEL_ENV'],
+        'instructions': os.environ['AGENT_INSTRUCTIONS_ENV'],
         'tools': [{
             'type': 'azure_ai_search',
             'azure_ai_search': {
                 'indexes': [{
-                    'project_connection_id': '${SEARCH_CONNECTION_ID}',
-                    'index_name': '${IDX}',
+                    'project_connection_id': os.environ['SEARCH_CONNECTION_ID_ENV'],
+                    'index_name': os.environ['INDEX_NAME_ENV'],
                     'query_type': 'simple'
                 }]
             }
