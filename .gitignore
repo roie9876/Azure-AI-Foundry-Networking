@@ -10,3 +10,5 @@ local.settings.json
 .sharepoint-sync-repo/
 deployment/.sharepoint-sync-repo/
 chat-context.md
+azurevpnconfig-withcert.xmlhub-vnet-foundry.AzureVpnProfile.xml
+*.drawio.bkp
