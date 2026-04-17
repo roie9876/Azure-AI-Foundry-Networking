@@ -1173,7 +1173,7 @@ search_put "skillsets/${SS}" "Skillset ${SS}" '{
         {"name":"text_vector","source":"/document/pages/*/text_vector"},
         {"name":"chunk","source":"/document/pages/*"},
         {"name":"title","source":"/document/metadata_storage_name"},
-        {"name":"original_file_name","source":"/document/metadata_storage_name"},
+        {"name":"original_file_name","source":"/document/sharepoint_web_url"},
         {"name":"acl_user_ids","source":"/document/user_ids"},
         {"name":"acl_group_ids","source":"/document/group_ids"},
         {"name":"purview_label_name","source":"/document/purview_label_name"},
@@ -1211,7 +1211,7 @@ search_put "indexers/${IDXR}" "Indexer ${IDXR}" '{
   "fieldMappings": [
     {"sourceFieldName":"metadata_storage_name","targetFieldName":"title"},
     {"sourceFieldName":"caseId","targetFieldName":"case_id"},
-    {"sourceFieldName":"originalFileName","targetFieldName":"original_file_name"},
+    {"sourceFieldName":"sharepoint_web_url","targetFieldName":"original_file_name"},
     {"sourceFieldName":"sharepoint_web_url","targetFieldName":"url"}
   ],
   "outputFieldMappings": []
@@ -1437,7 +1437,7 @@ AGENT_MODEL="${FOUNDRY_AGENT_MODEL:-gpt-4.1}"
 # quoting URLs found inside the chunk/text body (PDFs sometimes contain internal
 # intranet URLs like http://portalp3.mod.int:... that must NOT be cited) or tool
 # metadata URLs (e.g. the search service endpoint itself).
-DEFAULT_AGENT_INSTRUCTIONS=$'You are a grounded assistant over the SharePoint knowledge source (Azure AI Search index `sharepoint-index`).\n\nTool use:\n- For EVERY user question, you MUST call the `azure_ai_search` tool first.\n- Answer ONLY from tool results. Never answer from general knowledge or the internet.\n- If the tool returns no results, or none of the results actually contain the answer, reply exactly: "I don\'t know — the answer is not in the knowledge source."\n\nCITATION FORMAT (MANDATORY — READ CAREFULLY):\n- At the end of your answer, add a section titled "מקורות" (Sources).\n- For each source, output TWO lines:\n    1) The `title` field (plain text, no brackets, no markdown link).\n    2) The `url` field as a BARE URL on its own line (NOT wrapped in markdown, NOT in brackets, NOT as [title](url)). Just the raw https://… string.\n- Example output (copy this format exactly):\n    מקורות:\n    iectest.docx\n    https://mngenvmcap338326.sharepoint.com/sites/lab511-demo/_layouts/15/Doc.aspx?sourcedoc=%7BABC%7D&file=iectest.docx\n- DO NOT use `[title](url)` markdown — Foundry rewrites those into numbered annotation chips that point to the search endpoint.\n- DO NOT reference sources with [1], [2] … numbered chips as the only citation. The user needs the bare https URL.\n- The URL MUST come from the `url` field of the search result. Never use URLs from `chunk`, `text`, `content`, or any *.search.windows.net URL.\n- If a result has no `url` value, print only the title line.\n\nLanguage: reply in the same language as the user\'s question (Hebrew in, Hebrew out).'
+DEFAULT_AGENT_INSTRUCTIONS=$'You are a grounded assistant over the SharePoint knowledge source (Azure AI Search index `sharepoint-index`).\n\n- For EVERY user question, call the `azure_ai_search` tool first.\n- Answer ONLY from the tool results. Never answer from general knowledge or the internet.\n- If the tool returns no relevant results, reply exactly: "I don\'t know — the answer is not in the knowledge source."\n\nHow to extract the SharePoint URL for citations:\nEach search result has a `content` field. The LAST two non-empty lines of `content` always are:\n  <document filename>\n  <SharePoint URL starting with https://...sharepoint.com/...>\nUse that trailing URL as the citation target. This is the ONLY correct URL. Ignore the `url` field (it always points to the search service endpoint) and ignore any intranet URLs (http://rimonp.mod.int/..., http://portalp3.mod.int/...) that appear earlier inside the content body.\n\nCitation output format — CRITICAL (Foundry post-processes your output and will break anything it recognizes as a citation anchor):\n- DO NOT use markdown link syntax [text](url). Foundry overwrites the URL.\n- DO NOT use markdown bold or italic (**text** or *text*). Foundry replaces styled text with a citation marker (%CITATION_N%).\n- DO NOT wrap the URL in backticks (that makes it non-clickable).\n- DO print the URL as a bare, plain URL on its own line. The Playground markdown renderer auto-linkifies bare URLs, and the citation rewriter leaves them alone.\n\nAt the end of your answer, on a new paragraph, write the exact heading line:\nמקורות:\n\nThen, for each distinct document you cited, print TWO consecutive lines:\n  Line 1: the plain document title (no markdown, no bold, no backticks).\n  Line 2: the bare SharePoint URL (no markdown, no backticks, no surrounding text — just the URL).\nLeave a blank line between sources.\n\nRules:\n- The SharePoint URL must be the last line of the result\'s `content`, must start with https://, and must contain `sharepoint.com`.\n- If a result\'s last content line does not start with `https://` and contain `sharepoint.com`, omit that source (do not invent URLs).\n- De-duplicate sources by URL.\n- Reply in the same language as the user\'s question (Hebrew in → Hebrew out).'
 AGENT_INSTRUCTIONS="${FOUNDRY_AGENT_INSTRUCTIONS:-$DEFAULT_AGENT_INSTRUCTIONS}"
 
 if [ -z "$PROJECT" ]; then
@@ -1488,7 +1488,14 @@ body = {
                 'indexes': [{
                     'project_connection_id': os.environ['SEARCH_CONNECTION_ID_ENV'],
                     'index_name': os.environ['INDEX_NAME_ENV'],
-                    'query_type': 'simple'
+                    'query_type': 'simple',
+                    'fieldsMapping': {
+                        'urlField': 'url',
+                        'titleField': 'title',
+                        'contentFields': ['chunk'],
+                        'filepathField': 'title',
+                        'vectorFields': []
+                    }
                 }]
             }
         }]
