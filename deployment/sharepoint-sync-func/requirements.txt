@@ -1,0 +1,19 @@
+# Azure SDK
+azure-functions>=1.21.0
+azure-identity>=1.15.0
+azure-storage-blob>=12.19.0
+
+# Microsoft Graph
+msgraph-sdk>=1.2.0
+
+# HTTP client for delta queries
+httpx>=0.27.0
+
+# Utilities
+python-dateutil>=2.8.2
+aiohttp>=3.9.0
+python-dotenv>=1.0.0
+httpx>=0.27.0  # For Graph delta API with custom headers
+
+# Logging
+structlog>=24.1.0

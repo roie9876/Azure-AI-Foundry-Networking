@@ -1,0 +1,21 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+
+# Docker
+.dockerignore
+*.tar
+
+# Environment
+.env
+.env.local
+
+# pytest
+.pytest_cache/
+htmlcov/
+.coverage

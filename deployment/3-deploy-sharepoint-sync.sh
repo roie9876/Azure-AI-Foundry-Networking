@@ -140,9 +140,10 @@ fi
 
 BLOB_CONTAINER_NAME="$AZURE_BLOB_CONTAINER_NAME"
 
-# Sync code repo
-SYNC_REPO_URL="https://github.com/Azure-Samples/sharepoint-foundryIQ-secure-sync.git"
-SYNC_CLONE_DIR="${SCRIPT_DIR}/.sharepoint-sync-repo"
+# Sync code source — vendored in-repo under deployment/sharepoint-sync-func/.
+# See deployment/sharepoint-sync-func/UPSTREAM.md for the pinned upstream SHA
+# and update instructions. No runtime git-clone: the deploy is self-contained.
+SYNC_SRC_DIR="${SCRIPT_DIR}/sharepoint-sync-func"
 
 echo "============================================"
 echo " SharePoint Sync Pipeline Deployment"
@@ -757,6 +758,7 @@ az functionapp config appsettings set \
     "EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS}" \
     "SUBSCRIPTION_ID=$SUBSCRIPTION" \
     "TIMER_SCHEDULE=${TIMER_SCHEDULE:-0 0 * * * *}" \
+    "TIMER_SCHEDULE_FULL=${TIMER_SCHEDULE_FULL:-0 0 3 * * *}" \
   --output none
 
 echo "  ✅ Function App settings configured"
@@ -1322,39 +1324,24 @@ else
 fi
 
 ###############################################################################
-# 13. Clone & Publish Sync Code (Flex Consumption — identity-auth, no Oryx)
+# 13. Publish Sync Code (Flex Consumption — identity-auth, no Oryx)
 #     Flex Consumption rejects Oryx build settings and requires pre-built
 #     wheels. We build dependencies in a Linux/amd64 container so the wheels
 #     match the FA runtime (critical when deploying from macOS ARM).
+#
+#     Source is vendored in deployment/sharepoint-sync-func/ — no git-clone
+#     at deploy time. See sharepoint-sync-func/UPSTREAM.md for provenance.
 ###############################################################################
-echo "──── Step 13: Cloning & Publishing Sync Code ────"
+echo "──── Step 13: Publishing Sync Code ────"
 
-if [ -d "$SYNC_CLONE_DIR" ]; then
-  echo "  Repo already cloned — pulling latest..."
-  git -C "$SYNC_CLONE_DIR" pull --ff-only || true
-else
-  git clone "$SYNC_REPO_URL" "$SYNC_CLONE_DIR"
-fi
-
-# Find the Python function app source
-FUNC_SRC_DIR=""
-for CANDIDATE in \
-  "$SYNC_CLONE_DIR/src/sync" \
-  "$SYNC_CLONE_DIR/src/python" \
-  "$SYNC_CLONE_DIR/src/function_app" \
-  "$SYNC_CLONE_DIR/src"; do
-  if [ -f "$CANDIDATE/function_app.py" ] || [ -f "$CANDIDATE/host.json" ]; then
-    FUNC_SRC_DIR="$CANDIDATE"
-    break
-  fi
-done
-
-if [ -z "$FUNC_SRC_DIR" ]; then
-  echo "  ⚠️  Could not detect function source directory in $SYNC_CLONE_DIR"
+if [ ! -f "$SYNC_SRC_DIR/host.json" ]; then
+  echo "  ❌ Vendored sync source not found at $SYNC_SRC_DIR"
+  echo "     Expected deployment/sharepoint-sync-func/host.json"
   exit 1
 fi
 
-echo "  Source: $FUNC_SRC_DIR"
+FUNC_SRC_DIR="$SYNC_SRC_DIR"
+echo "  Source: $FUNC_SRC_DIR (vendored)"
 
 # Remove any Oryx settings that would break Flex deploy
 az functionapp config appsettings delete \
