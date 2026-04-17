@@ -251,7 +251,21 @@ class SharePointClient:
                             async for file in self._process_item(item, folder_path):
                                 yield file
         except Exception as e:
-            await logger.aerror("Error listing files", error=str(e), folder_path=folder_path)
+            # Gracefully skip folders that no longer exist in SharePoint
+            # (deleted or renamed). Graph returns HTTP 404 with
+            # error code "itemNotFound". Without this, a single missing
+            # folder in SHAREPOINT_FOLDER_PATH (comma-separated list)
+            # aborts the entire sync run.
+            err_str = str(e)
+            status = getattr(e, "response_status_code", None) or getattr(e, "status_code", None)
+            if status == 404 or "itemNotFound" in err_str or "could not be found" in err_str.lower():
+                await logger.awarning(
+                    "SharePoint folder not found — skipping",
+                    folder_path=folder_path,
+                    error=err_str,
+                )
+                return
+            await logger.aerror("Error listing files", error=err_str, folder_path=folder_path)
             raise
     
     async def _process_item(self, item: DriveItem, parent_path: str) -> AsyncIterator[SharePointFile]:

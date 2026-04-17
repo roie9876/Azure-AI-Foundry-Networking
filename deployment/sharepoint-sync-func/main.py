@@ -160,28 +160,54 @@ def _path_in_scope(item_path: str, folder_paths: List[str]) -> bool:
     return False
 
 
+def _is_not_found_error(e: Exception) -> bool:
+    """Detect Graph API 404 / itemNotFound so we can skip missing folders."""
+    err = str(e)
+    status = getattr(e, "response_status_code", None) or getattr(e, "status_code", None)
+    return status == 404 or "itemNotFound" in err or "could not be found" in err.lower()
+
+
 async def _list_files_multi(sp_client: SharePointClient, folder_paths: List[str], include_exts: List[str] = None, exclude_exts: List[str] = None) -> AsyncIterator[SharePointFile]:
-    """Yield files from multiple folder paths (supports comma-separated SHAREPOINT_FOLDER_PATH)."""
+    """Yield files from multiple folder paths (supports comma-separated SHAREPOINT_FOLDER_PATH).
+
+    If a folder no longer exists in SharePoint (deleted/renamed), log a warning
+    and continue with the remaining folders instead of aborting the whole sync.
+    """
     include_exts = include_exts or []
     exclude_exts = exclude_exts or []
     for folder_path in folder_paths:
         await logger.ainfo("Listing files from folder", folder_path=folder_path)
-        async for sp_file in sp_client.list_files(folder_path):
-            if not _ext_filter_allows(getattr(sp_file, "name", ""), include_exts, exclude_exts):
+        try:
+            async for sp_file in sp_client.list_files(folder_path):
+                if not _ext_filter_allows(getattr(sp_file, "name", ""), include_exts, exclude_exts):
+                    continue
+                yield sp_file
+        except Exception as e:
+            if _is_not_found_error(e):
+                await logger.awarning("Folder missing in SharePoint — skipping", folder_path=folder_path, error=str(e))
                 continue
-            yield sp_file
+            raise
 
 
 async def _get_changed_files_multi(delta_client: GraphDeltaFilesClient, folder_paths: List[str], include_exts: List[str] = None, exclude_exts: List[str] = None) -> AsyncIterator[SharePointFile]:
-    """Yield changed files from multiple folder paths via delta API."""
+    """Yield changed files from multiple folder paths via delta API.
+
+    Skips folders that no longer exist (same robustness as full sync).
+    """
     include_exts = include_exts or []
     exclude_exts = exclude_exts or []
     for folder_path in folder_paths:
         await logger.ainfo("Getting delta changes for folder", folder_path=folder_path)
-        async for sp_file in delta_client.get_changed_files(folder_path):
-            if not _ext_filter_allows(getattr(sp_file, "name", ""), include_exts, exclude_exts):
+        try:
+            async for sp_file in delta_client.get_changed_files(folder_path):
+                if not _ext_filter_allows(getattr(sp_file, "name", ""), include_exts, exclude_exts):
+                    continue
+                yield sp_file
+        except Exception as e:
+            if _is_not_found_error(e):
+                await logger.awarning("Folder missing in SharePoint (delta) — skipping", folder_path=folder_path, error=str(e))
                 continue
-            yield sp_file
+            raise
 
 
 async def _download_with_rms_fallback(
