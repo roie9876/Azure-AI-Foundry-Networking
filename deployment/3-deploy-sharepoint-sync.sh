@@ -8,17 +8,18 @@ set -euo pipefail
 #   1. Creates func-subnet with VNet integration delegation
 #   2. Creates a Blob container for SharePoint sync in existing storage
 #   3. Creates Function App storage (with pre-created file share)
-#   4. Deploys Azure Function App (Elastic Premium, Python, VNet-integrated)
-#   5. Locks down Function App storage (private endpoints: blob+file+queue+table)
-#      + Links private DNS zones to spoke VNet
+#   4. Private Endpoints + DNS for FA storage
+#   5. Deploys Azure Function App (Flex Consumption, Python, identity storage)
 #   6. Deploys Key Vault (private) with SPN secrets
-#   7. Configures Function App settings (KV refs + AI Search + OpenAI)
+#   7. Configures Function App settings (KV refs + Search + OpenAI + ext-filter)
 #   8. Grants RBAC: Function App → Storage, Key Vault
 #   9. Creates Shared Private Links: AI Search → Storage + AI Services
 #  10. Grants RBAC: AI Search → AI Services (for embedding/OCR skills)
 #  11. Creates AI Search vector index, data source, skillset, and indexer
-#  12. Adds firewall rules for Graph API + SharePoint + Entra ID
-#  13. Clones sync code and publishes to Function App (zip + Oryx remote build)
+#  11b. Patches all indexers to Private execution (incl. Foundry auto-wired ones)
+#  12. Adds firewall rules: Graph + SharePoint + Entra ID + App Insights
+#  13. Clones sync code, builds Linux/amd64 wheels in Docker, publishes via
+#      SCM /api/publish (no Oryx, no shared-key required)
 #
 # Based on: https://github.com/Azure-Samples/sharepoint-foundryIQ-secure-sync
 # Credit: Sidali Kadouche (@sidkadouc)
@@ -354,20 +355,46 @@ echo "  ✅ Container: $BLOB_CONTAINER_NAME in $STORAGE_NAME"
 echo ""
 
 ###############################################################################
-# 3. Create Function App Storage (with pre-created file share)
+# 3. Create Function App Storage — PRIVATE from the start
+#    Critical: storage must be locked down + PEs + DNS + share all ready
+#    BEFORE the Function App is created. Otherwise the FA bootstraps
+#    against the public endpoint and then can't remount when storage is
+#    later locked down (classic "stuck in Application Error" symptom).
 ###############################################################################
-echo "──── Step 3: Creating Function App Storage ────"
+echo "──── Step 3: Creating Function App Storage (private from start) ────"
 
-az storage account create \
+if az storage account show -n "$FUNC_STORAGE_NAME" -g "$SPOKE_RG" -o none 2>/dev/null; then
+  echo "  ℹ️  Storage $FUNC_STORAGE_NAME already exists — reusing"
+else
+  az storage account create \
+    --name "$FUNC_STORAGE_NAME" \
+    --resource-group "$SPOKE_RG" \
+    --location "$LOCATION" \
+    --sku Standard_LRS \
+    --kind StorageV2 \
+    --allow-blob-public-access false \
+    --min-tls-version TLS1_2 \
+    --public-network-access Disabled \
+    --default-action Deny \
+    --bypass AzureServices \
+    --output none
+fi
+
+# Force-apply private settings even if SA was reused (idempotent).
+az storage account update \
   --name "$FUNC_STORAGE_NAME" \
   --resource-group "$SPOKE_RG" \
-  --location "$LOCATION" \
-  --sku Standard_LRS \
-  --kind StorageV2 \
-  --allow-blob-public-access false \
-  --min-tls-version TLS1_2 \
+  --public-network-access Disabled \
+  --default-action Deny \
+  --bypass AzureServices \
   --output none
 
+FUNC_STORAGE_ID=$(az storage account show \
+  --name "$FUNC_STORAGE_NAME" \
+  --resource-group "$SPOKE_RG" \
+  --query id -o tsv)
+
+# Create the file share via ARM control plane (works even when storage is locked).
 az storage share-rm create \
   --storage-account "$FUNC_STORAGE_NAME" \
   --resource-group "$SPOKE_RG" \
@@ -375,21 +402,106 @@ az storage share-rm create \
   --quota 1 \
   --output none
 
-echo "  ✅ Function Storage: $FUNC_STORAGE_NAME"
+echo "  ✅ Function Storage: $FUNC_STORAGE_NAME (private, file share '$FUNC_APP_NAME' ready)"
 echo ""
 
 ###############################################################################
-# 4. Deploy Azure Function App (VNet-integrated, managed identity)
+# 4. Private Endpoints + DNS for Function Storage
+#    MUST run before Function App creation so the FA mounts via PE from day 1.
 ###############################################################################
-echo "──── Step 4: Deploying Function App ────"
+echo "──── Step 4: Creating Private Endpoints + DNS for Function Storage ────"
 
-az functionapp plan create \
-  --name "$FUNC_PLAN_NAME" \
-  --resource-group "$SPOKE_RG" \
-  --location "$LOCATION" \
-  --sku EP1 \
-  --is-linux true \
-  --output none
+# Helper: create PE + DNS zone group (idempotent).
+create_fnstor_pe() {
+  local GROUP="$1"      # blob|file|queue|table
+  local ZONE="privatelink.${GROUP}.core.windows.net"
+  local PE_NAME="pe-${FUNC_STORAGE_NAME}-${GROUP}"
+
+  if az network private-endpoint show -g "$SPOKE_RG" -n "$PE_NAME" -o none 2>/dev/null; then
+    echo "  ℹ️  PE $PE_NAME exists — reusing"
+  else
+    az network private-endpoint create \
+      --name "$PE_NAME" \
+      --resource-group "$SPOKE_RG" \
+      --vnet-name "$SPOKE_VNET_NAME" \
+      --subnet "$SPOKE_PE_SUBNET_NAME" \
+      --private-connection-resource-id "$FUNC_STORAGE_ID" \
+      --group-id "$GROUP" \
+      --connection-name "${PE_NAME}-conn" \
+      --location "$LOCATION" \
+      --output none
+  fi
+
+  # DNS zone group (upsert).
+  az network private-endpoint dns-zone-group create \
+    --resource-group "$SPOKE_RG" \
+    --endpoint-name "$PE_NAME" \
+    --name "default" \
+    --private-dns-zone "$(dns_zone_id "$ZONE")" \
+    --zone-name "privatelink-${GROUP}-core-windows-net" \
+    --output none 2>/dev/null || true
+}
+
+create_fnstor_pe blob
+create_fnstor_pe file
+create_fnstor_pe queue
+create_fnstor_pe table
+echo "  ✅ Private Endpoints created (blob + file + queue + table)"
+
+# Link private DNS zones to the spoke VNet (required for PE name resolution).
+# Zones may be spread across RGs (and possibly a central DNS subscription).
+SPOKE_VNET_ID="/subscriptions/$SUBSCRIPTION/resourceGroups/$SPOKE_RG/providers/Microsoft.Network/virtualNetworks/$SPOKE_VNET_NAME"
+DNS_LINK_NAME="spoke-sync-link"
+for ZONE in privatelink.blob.core.windows.net privatelink.file.core.windows.net \
+            privatelink.queue.core.windows.net privatelink.table.core.windows.net \
+            privatelink.vaultcore.azure.net privatelink.search.windows.net \
+            privatelink.cognitiveservices.azure.com privatelink.openai.azure.com; do
+  ZONE_RG=$(dns_zone_rg "$ZONE")
+  ID_CACHE="$DNS_ZONE_CACHE_DIR/id_${ZONE//\//_}"
+  if [ -f "$ID_CACHE" ]; then
+    ZONE_SUB="$SUBSCRIPTION"
+  else
+    ZONE_SUB="$DNS_SUBSCRIPTION"
+  fi
+  az network private-dns link vnet create \
+    --subscription "$ZONE_SUB" \
+    --name "$DNS_LINK_NAME" \
+    --zone-name "$ZONE" \
+    --resource-group "$ZONE_RG" \
+    --virtual-network "$SPOKE_VNET_ID" \
+    --registration-enabled false \
+    -o none 2>/dev/null || true
+done
+echo "  ✅ Private DNS zones linked to $SPOKE_VNET_NAME"
+
+# Wait for DNS A-records to propagate (PE ↔ DNS zone group sync).
+echo "  Waiting 30s for PE DNS records to propagate..."
+sleep 30
+
+# Verify the file-service FQDN resolves to a private IP (via FW or local dig).
+FILE_FQDN="${FUNC_STORAGE_NAME}.file.core.windows.net"
+for TRY in 1 2 3 4 5 6; do
+  RESOLVED_IP=$(dig +short "$FILE_FQDN" 2>/dev/null | tail -1)
+  case "$RESOLVED_IP" in
+    10.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|192.168.*)
+      echo "  ✅ $FILE_FQDN → $RESOLVED_IP (private) — DNS ready"
+      break ;;
+    *)
+      echo "  ⏳ Attempt $TRY/6: $FILE_FQDN not yet resolving to private IP ($RESOLVED_IP), waiting 15s..."
+      sleep 15 ;;
+  esac
+done
+echo ""
+
+###############################################################################
+# 5. Deploy Azure Function App — FLEX CONSUMPTION + identity-based storage
+#    Flex Consumption is required in environments where the MG policy
+#    'storageaccount_disablelocalauth_modify' (or similar) disables shared-key
+#    auth on storage — because Flex uses identity-based AzureWebJobsStorage.
+#    NOTE: Elastic Premium cannot be used here because EP requires a shared-key
+#    content-share connection string, which the storage policy forbids.
+###############################################################################
+echo "──── Step 5: Deploying Function App (Flex Consumption) ────"
 
 FUNC_SUBNET_ID=$(az network vnet subnet show \
   --resource-group "$SPOKE_RG" \
@@ -397,69 +509,115 @@ FUNC_SUBNET_ID=$(az network vnet subnet show \
   --name "$FUNC_SUBNET_NAME" \
   --query id -o tsv)
 
+# Create Flex Consumption plan (SKU = FC1)
+if az functionapp plan show -n "$FUNC_PLAN_NAME" -g "$SPOKE_RG" -o none 2>/dev/null; then
+  echo "  ℹ️  Plan $FUNC_PLAN_NAME exists — reusing"
+else
+  az functionapp plan create \
+    --name "$FUNC_PLAN_NAME" \
+    --resource-group "$SPOKE_RG" \
+    --location "$LOCATION" \
+    --flex-consumption-location "$LOCATION" \
+    --sku FC1 \
+    --is-linux true \
+    --output none 2>/dev/null || \
+  az functionapp plan create \
+    --name "$FUNC_PLAN_NAME" \
+    --resource-group "$SPOKE_RG" \
+    --location "$LOCATION" \
+    --sku FC1 \
+    --is-linux true \
+    --output none
+fi
+
 PLAN_ID=$(az functionapp plan show \
   --name "$FUNC_PLAN_NAME" \
   --resource-group "$SPOKE_RG" \
   --query id -o tsv)
 
-# Elastic Premium requires a content-share connection string. Use shared key
-# for the workload-local function storage (we created it, it's private).
-FUNC_STG_KEY=$(az storage account keys list \
-  --account-name "$FUNC_STORAGE_NAME" -g "$SPOKE_RG" \
-  --query "[0].value" -o tsv)
-FUNC_STG_CONN="DefaultEndpointsProtocol=https;AccountName=${FUNC_STORAGE_NAME};AccountKey=${FUNC_STG_KEY};EndpointSuffix=core.windows.net"
+# Deployment storage container (required by Flex) — create in the FA storage account
+FUNC_DEPLOY_CONTAINER="app-package-${FUNC_APP_NAME:0:30}"
+az storage container create \
+  --account-name "$FUNC_STORAGE_NAME" \
+  --name "$FUNC_DEPLOY_CONTAINER" \
+  --auth-mode login \
+  --output none 2>/dev/null || true
 
-# Create via ARM REST API (bypasses shared key validation issues).
-# Retry on transient FailedIdentityOperation / InternalServerError (Azure MSI flakiness).
-CREATE_ATTEMPT=0
-CREATE_MAX=5
-while : ; do
-  CREATE_ATTEMPT=$((CREATE_ATTEMPT+1))
-  if az rest --method PUT \
-    --url "https://management.azure.com/subscriptions/$SUBSCRIPTION/resourceGroups/$SPOKE_RG/providers/Microsoft.Web/sites/${FUNC_APP_NAME}?api-version=2023-12-01" \
-    --body "{
-      \"location\": \"$LOCATION\",
-      \"kind\": \"functionapp,linux\",
-      \"identity\": {\"type\": \"SystemAssigned\"},
-      \"properties\": {
-        \"serverFarmId\": \"$PLAN_ID\",
-        \"reserved\": true,
-        \"virtualNetworkSubnetId\": \"$FUNC_SUBNET_ID\",
-        \"vnetRouteAllEnabled\": true,
-        \"siteConfig\": {
-          \"linuxFxVersion\": \"PYTHON|3.11\",
-          \"appSettings\": [
-            {\"name\": \"FUNCTIONS_EXTENSION_VERSION\", \"value\": \"~4\"},
-            {\"name\": \"FUNCTIONS_WORKER_RUNTIME\", \"value\": \"python\"},
-            {\"name\": \"AzureWebJobsStorage\", \"value\": \"$FUNC_STG_CONN\"},
-            {\"name\": \"WEBSITE_CONTENTAZUREFILECONNECTIONSTRING\", \"value\": \"$FUNC_STG_CONN\"},
-            {\"name\": \"WEBSITE_CONTENTSHARE\", \"value\": \"$FUNC_APP_NAME\"},
-            {\"name\": \"WEBSITE_CONTENTOVERVNET\", \"value\": \"1\"},
-            {\"name\": \"WEBSITE_DNS_SERVER\", \"value\": \"$FW_PRIVATE_IP\"}
-          ]
-        }
-      }
-    }" \
-    --output none 2>/tmp/funcapp-create.err; then
-    echo "  ✅ Function App created (attempt $CREATE_ATTEMPT)"
-    break
-  fi
-  ERR_MSG=$(cat /tmp/funcapp-create.err || true)
-  if [ "$CREATE_ATTEMPT" -ge "$CREATE_MAX" ]; then
-    echo "  ❌ Function App create failed after $CREATE_MAX attempts:"
-    echo "$ERR_MSG"
-    exit 1
-  fi
-  if echo "$ERR_MSG" | grep -qE "FailedIdentityOperation|InternalServerError|timed out|timeout"; then
-    echo "  ⚠️  Transient error (attempt $CREATE_ATTEMPT/$CREATE_MAX), retrying in 30s..."
-    echo "      $(echo "$ERR_MSG" | head -1)"
+FUNC_STORAGE_BLOB_URL="https://${FUNC_STORAGE_NAME}.blob.core.windows.net/${FUNC_DEPLOY_CONTAINER}"
+
+# Create Flex Consumption function app via CLI (handles FC1 complexity)
+if az functionapp show -n "$FUNC_APP_NAME" -g "$SPOKE_RG" -o none 2>/dev/null; then
+  echo "  ℹ️  Function App $FUNC_APP_NAME exists — reusing"
+else
+  CREATE_ATTEMPT=0
+  CREATE_MAX=5
+  while : ; do
+    CREATE_ATTEMPT=$((CREATE_ATTEMPT+1))
+    if az functionapp create \
+      --name "$FUNC_APP_NAME" \
+      --resource-group "$SPOKE_RG" \
+      --plan "$FUNC_PLAN_NAME" \
+      --storage-account "$FUNC_STORAGE_NAME" \
+      --runtime python \
+      --runtime-version 3.11 \
+      --flexconsumption-location "$LOCATION" \
+      --assign-identity "[system]" \
+      --deployment-storage-name "$FUNC_STORAGE_NAME" \
+      --deployment-storage-container-name "$FUNC_DEPLOY_CONTAINER" \
+      --deployment-storage-auth-type UserAssignedIdentity 2>/tmp/fa-create.err; then
+      echo "  ✅ Function App created (attempt $CREATE_ATTEMPT)"
+      break
+    fi
+    # Fall back: try without --flexconsumption-location (older az CLI)
+    if az functionapp create \
+      --name "$FUNC_APP_NAME" \
+      --resource-group "$SPOKE_RG" \
+      --plan "$FUNC_PLAN_NAME" \
+      --storage-account "$FUNC_STORAGE_NAME" \
+      --runtime python \
+      --runtime-version 3.11 \
+      --assign-identity "[system]" \
+      --functions-version 4 2>/tmp/fa-create.err; then
+      echo "  ✅ Function App created via fallback (attempt $CREATE_ATTEMPT)"
+      break
+    fi
+    ERR_MSG=$(cat /tmp/fa-create.err || true)
+    if [ "$CREATE_ATTEMPT" -ge "$CREATE_MAX" ]; then
+      echo "  ❌ Function App create failed after $CREATE_MAX attempts:"
+      echo "$ERR_MSG"
+      exit 1
+    fi
+    echo "  ⚠️  Attempt $CREATE_ATTEMPT/$CREATE_MAX failed, retrying in 30s..."
+    echo "      $(echo "$ERR_MSG" | head -2)"
     sleep 30
-    continue
-  fi
-  echo "  ❌ Function App create failed with non-transient error:"
-  echo "$ERR_MSG"
-  exit 1
-done
+  done
+fi
+
+# Enable VNet integration (Flex supports it, but not via --subnet in create)
+az functionapp vnet-integration add \
+  --name "$FUNC_APP_NAME" \
+  --resource-group "$SPOKE_RG" \
+  --vnet "$SPOKE_VNET_NAME" \
+  --subnet "$FUNC_SUBNET_NAME" \
+  --output none 2>/dev/null || true
+
+# Force identity-based AzureWebJobsStorage (required — shared key is disabled)
+# and remove any shared-key/Oryx settings that break Flex.
+az functionapp config appsettings set \
+  --name "$FUNC_APP_NAME" -g "$SPOKE_RG" \
+  --settings \
+    "AzureWebJobsStorage__accountName=$FUNC_STORAGE_NAME" \
+    "AzureWebJobsStorage__credential=managedidentity" \
+    "WEBSITE_DNS_SERVER=$FW_PRIVATE_IP" \
+    "WEBSITE_VNET_ROUTE_ALL=1" \
+  --output none
+# Remove anything that would conflict with Flex+identity
+az functionapp config appsettings delete \
+  --name "$FUNC_APP_NAME" -g "$SPOKE_RG" \
+  --setting-names AzureWebJobsStorage WEBSITE_CONTENTAZUREFILECONNECTIONSTRING \
+    WEBSITE_CONTENTSHARE WEBSITE_CONTENTOVERVNET \
+    SCM_DO_BUILD_DURING_DEPLOYMENT ENABLE_ORYX_BUILD \
+  --output none 2>/dev/null || true
 
 FUNC_PRINCIPAL_ID=$(az functionapp identity show \
   --name "$FUNC_APP_NAME" \
@@ -483,129 +641,6 @@ for ROLE in "Storage Blob Data Owner" "Storage Account Contributor" \
 done
 
 echo "  ✅ Function App: $FUNC_APP_NAME (identity: $FUNC_PRINCIPAL_ID)"
-echo ""
-
-###############################################################################
-# 5. Lock down Function Storage (private endpoints)
-###############################################################################
-echo "──── Step 5: Locking down Function Storage ────"
-
-az storage account update \
-  --name "$FUNC_STORAGE_NAME" \
-  --resource-group "$SPOKE_RG" \
-  --default-action Deny \
-  --public-network-access Disabled \
-  --output none
-
-# Blob PE
-az network private-endpoint create \
-  --name "pe-${FUNC_STORAGE_NAME}-blob" \
-  --resource-group "$SPOKE_RG" \
-  --vnet-name "$SPOKE_VNET_NAME" \
-  --subnet "$SPOKE_PE_SUBNET_NAME" \
-  --private-connection-resource-id "$FUNC_STORAGE_ID" \
-  --group-id blob \
-  --connection-name "pe-${FUNC_STORAGE_NAME}-blob-conn" \
-  --location "$LOCATION" \
-  --output none
-
-az network private-endpoint dns-zone-group create \
-  --resource-group "$SPOKE_RG" \
-  --endpoint-name "pe-${FUNC_STORAGE_NAME}-blob" \
-  --name "default" \
-  --private-dns-zone "$(dns_zone_id privatelink.blob.core.windows.net)" \
-  --zone-name "privatelink-blob-core-windows-net" \
-  --output none
-
-# File PE (Functions need file shares)
-az network private-endpoint create \
-  --name "pe-${FUNC_STORAGE_NAME}-file" \
-  --resource-group "$SPOKE_RG" \
-  --vnet-name "$SPOKE_VNET_NAME" \
-  --subnet "$SPOKE_PE_SUBNET_NAME" \
-  --private-connection-resource-id "$FUNC_STORAGE_ID" \
-  --group-id file \
-  --connection-name "pe-${FUNC_STORAGE_NAME}-file-conn" \
-  --location "$LOCATION" \
-  --output none
-
-az network private-endpoint dns-zone-group create \
-  --resource-group "$SPOKE_RG" \
-  --endpoint-name "pe-${FUNC_STORAGE_NAME}-file" \
-  --name "default" \
-  --private-dns-zone "$(dns_zone_id privatelink.file.core.windows.net)" \
-  --zone-name "privatelink-file-core-windows-net" \
-  --output none
-
-# Queue PE (Functions need queues for AzureWebJobs triggers)
-az network private-endpoint create \
-  --name "pe-${FUNC_STORAGE_NAME}-queue" \
-  --resource-group "$SPOKE_RG" \
-  --vnet-name "$SPOKE_VNET_NAME" \
-  --subnet "$SPOKE_PE_SUBNET_NAME" \
-  --private-connection-resource-id "$FUNC_STORAGE_ID" \
-  --group-id queue \
-  --connection-name "pe-${FUNC_STORAGE_NAME}-queue-conn" \
-  --location "$LOCATION" \
-  --output none
-
-az network private-endpoint dns-zone-group create \
-  --resource-group "$SPOKE_RG" \
-  --endpoint-name "pe-${FUNC_STORAGE_NAME}-queue" \
-  --name "default" \
-  --private-dns-zone "$(dns_zone_id privatelink.queue.core.windows.net)" \
-  --zone-name "privatelink-queue-core-windows-net" \
-  --output none
-
-# Table PE (Functions need tables for AzureWebJobs lease management)
-az network private-endpoint create \
-  --name "pe-${FUNC_STORAGE_NAME}-table" \
-  --resource-group "$SPOKE_RG" \
-  --vnet-name "$SPOKE_VNET_NAME" \
-  --subnet "$SPOKE_PE_SUBNET_NAME" \
-  --private-connection-resource-id "$FUNC_STORAGE_ID" \
-  --group-id table \
-  --connection-name "pe-${FUNC_STORAGE_NAME}-table-conn" \
-  --location "$LOCATION" \
-  --output none
-
-az network private-endpoint dns-zone-group create \
-  --resource-group "$SPOKE_RG" \
-  --endpoint-name "pe-${FUNC_STORAGE_NAME}-table" \
-  --name "default" \
-  --private-dns-zone "$(dns_zone_id privatelink.table.core.windows.net)" \
-  --zone-name "privatelink-table-core-windows-net" \
-  --output none
-
-echo "  ✅ Function Storage locked down (blob + file + queue + table PEs)"
-
-# Link private DNS zones to the spoke VNet (required for PE name resolution).
-# Zones may be spread across RGs (and possibly a central DNS subscription);
-# we use the per-zone RG resolved in Step 0 and --subscription $DNS_SUBSCRIPTION.
-SPOKE_VNET_ID="/subscriptions/$SUBSCRIPTION/resourceGroups/$SPOKE_RG/providers/Microsoft.Network/virtualNetworks/$SPOKE_VNET_NAME"
-DNS_LINK_NAME="spoke-sync-link"
-for ZONE in privatelink.blob.core.windows.net privatelink.file.core.windows.net \
-            privatelink.queue.core.windows.net privatelink.table.core.windows.net \
-            privatelink.vaultcore.azure.net privatelink.search.windows.net \
-            privatelink.cognitiveservices.azure.com privatelink.openai.azure.com; do
-  ZONE_RG=$(dns_zone_rg "$ZONE")
-  # If zone was auto-created in workload subscription, use that; else DNS_SUBSCRIPTION.
-  ID_CACHE="$DNS_ZONE_CACHE_DIR/id_${ZONE//\//_}"
-  if [ -f "$ID_CACHE" ]; then
-    ZONE_SUB="$SUBSCRIPTION"
-  else
-    ZONE_SUB="$DNS_SUBSCRIPTION"
-  fi
-  az network private-dns link vnet create \
-    --subscription "$ZONE_SUB" \
-    --name "$DNS_LINK_NAME" \
-    --zone-name "$ZONE" \
-    --resource-group "$ZONE_RG" \
-    --virtual-network "$SPOKE_VNET_ID" \
-    --registration-enabled false \
-    -o none 2>/dev/null || true
-done
-echo "  ✅ Private DNS zones linked to $SPOKE_VNET_NAME"
 echo ""
 
 ###############################################################################
@@ -703,6 +738,8 @@ az functionapp config appsettings set \
     "SHAREPOINT_SITE_URL=$SP_SITE_URL" \
     "SHAREPOINT_DRIVE_NAME=${SHAREPOINT_DRIVE_NAME}" \
     "SHAREPOINT_FOLDER_PATH=${SHAREPOINT_FOLDER_PATH:-/}" \
+    "SHAREPOINT_INCLUDE_EXTENSIONS=${SHAREPOINT_INCLUDE_EXTENSIONS:-}" \
+    "SHAREPOINT_EXCLUDE_EXTENSIONS=${SHAREPOINT_EXCLUDE_EXTENSIONS:-}" \
     "AZURE_TENANT_ID=@Microsoft.KeyVault(SecretUri=${SP_TENANT_ID_URI})" \
     "AZURE_CLIENT_ID=@Microsoft.KeyVault(SecretUri=${SP_CLIENT_ID_URI})" \
     "AZURE_CLIENT_SECRET=@Microsoft.KeyVault(SecretUri=${SP_CLIENT_SECRET_URI})" \
@@ -1197,6 +1234,42 @@ fi
 echo ""
 
 ###############################################################################
+# 11b. Patch all indexers to Private execution environment
+#     Foundry knowledge sources auto-wire indexers (ks-*-indexer) that default
+#     to shared (public) execution. When storage has public access disabled,
+#     those runs fail 403. We flip every indexer in the service to Private.
+###############################################################################
+echo "──── Step 11b: Ensuring all indexers use Private execution ────"
+SEARCH_KEY=$(az search admin-key show --service-name "$AI_SEARCH_NAME" -g "$SPOKE_RG" --query primaryKey -o tsv)
+IDX_LIST=$(curl -sS -H "api-key: $SEARCH_KEY" \
+  "https://${AI_SEARCH_NAME}.search.windows.net/indexers?api-version=2024-07-01&\$select=name" \
+  | python3 -c "import sys,json; print('\n'.join(i['name'] for i in json.load(sys.stdin).get('value',[])))" 2>/dev/null || true)
+for IDXR_NAME in $IDX_LIST; do
+  [ -z "$IDXR_NAME" ] && continue
+  IDXR_JSON=$(curl -sS -H "api-key: $SEARCH_KEY" \
+    "https://${AI_SEARCH_NAME}.search.windows.net/indexers/${IDXR_NAME}?api-version=2024-07-01")
+  NEW_JSON=$(echo "$IDXR_JSON" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+params=d.setdefault('parameters',{})
+conf=params.setdefault('configuration',{})
+if conf.get('executionEnvironment','').lower() != 'private':
+    conf['executionEnvironment']='Private'
+    print(json.dumps(d))
+")
+  if [ -n "$NEW_JSON" ]; then
+    HTTP=$(curl -sS -o /dev/null -w "%{http_code}" -X PUT \
+      -H "api-key: $SEARCH_KEY" -H "Content-Type: application/json" \
+      "https://${AI_SEARCH_NAME}.search.windows.net/indexers/${IDXR_NAME}?api-version=2024-07-01" \
+      -d "$NEW_JSON")
+    echo "  ✅ ${IDXR_NAME}: patched to Private (HTTP $HTTP)"
+  else
+    echo "  ℹ️  ${IDXR_NAME}: already Private"
+  fi
+done
+echo ""
+
+###############################################################################
 # 12. Firewall Rules: Graph API + SharePoint + Entra ID
 ###############################################################################
 # Required egress FQDNs (same list applies whether using Azure FW or a 3rd-party NVA):
@@ -1204,6 +1277,12 @@ SP_SYNC_FQDNS=(
   "graph.microsoft.com"
   "login.microsoftonline.com"
   "*.sharepoint.com"
+  # Application Insights telemetry (required for Function App logs + ingestion)
+  "*.applicationinsights.azure.com"
+  "*.in.applicationinsights.azure.com"
+  "*.livediagnostics.monitor.azure.com"
+  "dc.services.visualstudio.com"
+  "*.services.visualstudio.com"
 )
 
 if [ "$FW_MODE" != "azure" ]; then
@@ -1250,7 +1329,10 @@ else
 fi
 
 ###############################################################################
-# 13. Clone & Publish Sync Code
+# 13. Clone & Publish Sync Code (Flex Consumption — identity-auth, no Oryx)
+#     Flex Consumption rejects Oryx build settings and requires pre-built
+#     wheels. We build dependencies in a Linux/amd64 container so the wheels
+#     match the FA runtime (critical when deploying from macOS ARM).
 ###############################################################################
 echo "──── Step 13: Cloning & Publishing Sync Code ────"
 
@@ -1275,70 +1357,78 @@ for CANDIDATE in \
 done
 
 if [ -z "$FUNC_SRC_DIR" ]; then
-  echo "  ⚠️  Could not detect function source directory."
-  echo "  Check: $SYNC_CLONE_DIR and publish manually:"
-  echo "    cd <source-dir> && func azure functionapp publish $FUNC_APP_NAME"
-else
-  echo "  Publishing from $FUNC_SRC_DIR ..."
-  pushd "$FUNC_SRC_DIR" > /dev/null
+  echo "  ⚠️  Could not detect function source directory in $SYNC_CLONE_DIR"
+  exit 1
+fi
 
-  # Use zip deploy with Oryx remote build (not local func publish).
-  # Local 'func publish --python' builds native packages for the host arch
-  # (e.g. ARM64 on macOS) which fail on Linux x64 Function Apps.
-  DEPLOY_ZIP="/tmp/func-deploy-$$.zip"
-  zip -r "$DEPLOY_ZIP" . -x ".git/*" "__pycache__/*" ".env" "*.pyc" ".venv/*" > /dev/null
+echo "  Source: $FUNC_SRC_DIR"
 
-  # Enable Oryx remote build
-  az functionapp config appsettings set \
-    --name "$FUNC_APP_NAME" --resource-group "$SPOKE_RG" \
-    --settings "SCM_DO_BUILD_DURING_DEPLOYMENT=true" "ENABLE_ORYX_BUILD=true" \
-    --output none
+# Remove any Oryx settings that would break Flex deploy
+az functionapp config appsettings delete \
+  --name "$FUNC_APP_NAME" -g "$SPOKE_RG" \
+  --setting-names SCM_DO_BUILD_DURING_DEPLOYMENT ENABLE_ORYX_BUILD \
+  --output none 2>/dev/null || true
 
-  # Publish via direct Kudu REST API — bypasses az CLI's SCM validation
-  # (which uses a 30s timeout that often fails on private SCM endpoints,
-  # even when the endpoint is fully reachable — see #2883 in azure-cli).
-  # Uses ARM token for auth + isAsync=true so we don't wait on Oryx build.
-  SCM_URL="https://${FUNC_APP_NAME}.scm.azurewebsites.net"
-  echo "  Requesting ARM access token..."
-  ARM_TOKEN=$(az account get-access-token --resource https://management.azure.com/ --query accessToken -o tsv)
-  PUBLISH_OK=0
-  for ATTEMPT in 1 2 3 4 5; do
-    echo "  Publish attempt $ATTEMPT/5 (Kudu zipdeploy, async)..."
-    DEPLOY_RESP=$(mktemp)
-    HTTP_CODE=$(curl -sS -o "$DEPLOY_RESP" -w "%{http_code}" \
-      --max-time 600 \
-      -X POST "${SCM_URL}/api/zipdeploy?isAsync=true" \
-      -H "Authorization: Bearer $ARM_TOKEN" \
-      -H "Content-Type: application/zip" \
-      --data-binary "@${DEPLOY_ZIP}" 2>&1) || HTTP_CODE="000"
-    if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "202" ]; then
-      echo "  ✅ Kudu accepted zip (HTTP $HTTP_CODE) — build will run in background."
-      rm -f "$DEPLOY_RESP"
-      PUBLISH_OK=1
-      break
-    fi
-    echo "  ⚠️  Publish attempt $ATTEMPT failed (HTTP $HTTP_CODE):"
-    head -5 "$DEPLOY_RESP" 2>/dev/null
-    rm -f "$DEPLOY_RESP"
-    if [ "$ATTEMPT" -lt 5 ]; then
-      echo "     Waiting 45s before retry..."
-      sleep 45
-    fi
-  done
-  if [ "$PUBLISH_OK" != "1" ]; then
-    echo "  ❌ Function App publish failed after 5 attempts."
-    echo "     SCM endpoint: https://${FUNC_APP_NAME}.scm.azurewebsites.net"
-    echo "     Ensure your machine has network reachability to the Function App SCM endpoint"
-    echo "     (via VPN/private DNS) and rerun the script."
-    rm -f "$DEPLOY_ZIP"
-    popd > /dev/null
+# Stage a deploy package with pre-built Linux/amd64 wheels
+PKG_DIR=$(mktemp -d -t sp-sync-pkg-XXXX)
+cp -R "$FUNC_SRC_DIR"/. "$PKG_DIR"/
+rm -rf "$PKG_DIR/.venv" "$PKG_DIR/__pycache__" 2>/dev/null || true
+find "$PKG_DIR" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+find "$PKG_DIR" -name "*.pyc" -delete 2>/dev/null || true
+
+if [ -f "$PKG_DIR/requirements.txt" ]; then
+  echo "  Building Python wheels in Linux/amd64 container..."
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "  ❌ Docker is required to build Linux/amd64 wheels on macOS/Windows."
+    echo "     Install Docker Desktop or use a Linux build host."
     exit 1
   fi
-
-  rm -f "$DEPLOY_ZIP"
-  popd > /dev/null
-  echo "  ✅ Sync code published (remote build)"
+  docker run --rm --platform linux/amd64 \
+    -v "$PKG_DIR":/work -w /work \
+    mcr.microsoft.com/azure-functions/python:4-python3.11 \
+    bash -lc "pip install --upgrade pip >/dev/null && pip install --target=.python_packages/lib/site-packages -r requirements.txt"
+  echo "  ✅ Wheels staged in .python_packages/lib/site-packages"
 fi
+
+DEPLOY_ZIP="/tmp/sp-sync-deploy-$$.zip"
+(cd "$PKG_DIR" && zip -rq "$DEPLOY_ZIP" . -x "*.pyc" "*/__pycache__/*" ".git/*" ".env" ".venv/*")
+echo "  Zip size: $(du -h "$DEPLOY_ZIP" | cut -f1)"
+
+# Deploy via SCM /api/publish — ARM /extensions/publish has a ~30MB limit,
+# SCM direct accepts large payloads. RemoteBuild=false because wheels
+# are already staged. Deployer=az_cli flags it in deployment history.
+SCM_HOST="${FUNC_APP_NAME}.scm.azurewebsites.net"
+ARM_TOKEN=$(az account get-access-token --resource https://management.azure.com/ --query accessToken -o tsv)
+
+PUBLISH_OK=0
+for ATTEMPT in 1 2 3 4 5; do
+  echo "  Publish attempt $ATTEMPT/5 (SCM /api/publish)..."
+  HTTP=$(curl -sS -o /tmp/pub-resp.json -w "%{http_code}" \
+    --max-time 900 \
+    -X POST "https://${SCM_HOST}/api/publish?RemoteBuild=false&Deployer=az_cli" \
+    -H "Authorization: Bearer $ARM_TOKEN" \
+    -H "Content-Type: application/zip" \
+    --data-binary "@${DEPLOY_ZIP}" 2>&1) || HTTP="000"
+  if [ "$HTTP" = "200" ] || [ "$HTTP" = "202" ]; then
+    echo "  ✅ Accepted (HTTP $HTTP): $(head -c 200 /tmp/pub-resp.json)"
+    PUBLISH_OK=1
+    break
+  fi
+  echo "  ⚠️  HTTP $HTTP — $(head -c 300 /tmp/pub-resp.json)"
+  [ "$ATTEMPT" -lt 5 ] && sleep 30
+done
+
+rm -rf "$PKG_DIR" "$DEPLOY_ZIP" /tmp/pub-resp.json
+
+if [ "$PUBLISH_OK" != "1" ]; then
+  echo "  ❌ Function App publish failed after 5 attempts."
+  echo "     Check your machine can reach https://${SCM_HOST} (VPN/private DNS)."
+  exit 1
+fi
+
+echo "  Restarting Function App..."
+az functionapp restart -g "$SPOKE_RG" -n "$FUNC_APP_NAME" --output none
+echo "  ✅ Sync code deployed (Flex Consumption, pre-built wheels)"
 echo ""
 
 ###############################################################################

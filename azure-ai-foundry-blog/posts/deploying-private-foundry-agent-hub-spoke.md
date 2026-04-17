@@ -269,3 +269,129 @@ If DNS resolves to private IPs, your private endpoints are working correctly.
 - **Private DNS zones must exist before deployment** and be linked to your VNet
 - **Register Microsoft.App and Microsoft.ContainerService** providers before deploying
 - **Attach UDR** to new subnets post-deployment to ensure traffic flows through your firewall
+
+---
+
+## Part 2: SharePoint Sync Pipeline & Agent with Citations
+
+After the base hub-spoke + Foundry deployment, you can add a **SharePoint → AI Search → Foundry Agent** pipeline that:
+1. Syncs SharePoint documents to Azure Blob Storage (via an Azure Function)
+2. Indexes blobs into AI Search with vector embeddings, OCR, and chunking
+3. Configures a Foundry agent with the **Azure AI Search tool** for grounded answers with **clickable SharePoint citations**
+
+### Architecture
+
+```
+SharePoint Online
+      │
+      ▼ (Graph API via Azure Firewall)
+Azure Function App (VNet-integrated, Elastic Premium)
+      │
+      ▼ (Private Endpoint)
+Azure Blob Storage (sharepoint-sync container)
+      │
+      ▼ (Shared Private Link)
+Azure AI Search Indexer (private execution)
+  • OCR → merge → chunk → embed (Azure OpenAI)
+  • Field: 'url' mapped from blob metadata 'sharepoint_web_url'
+      │
+      ▼
+Foundry Agent (azure_ai_search tool)
+  • Queries sharepoint-index directly
+  • Returns answers with url_citation annotations → SharePoint URLs
+```
+
+### Why Azure AI Search Tool Instead of Knowledge Base MCP?
+
+The Foundry Knowledge Base (Foundry IQ) exposes an MCP endpoint that agents can query. However, there's a key limitation for citation URLs:
+
+| Aspect | Knowledge Base MCP | Azure AI Search Tool |
+|--------|-------------------|---------------------|
+| **Tool results** | Only `ref_id`, `title`, `content` | All retrievable index fields including `url` |
+| **sourceDataFields config** | Accepted but doesn't affect MCP output | N/A — reads directly from index |
+| **Citation links** | Always point to the MCP endpoint URL | Native `url_citation` with document-level URLs |
+| **Setup** | Knowledge base + knowledge source + MCP tool | Project connection + tool config |
+
+The `azure_ai_search` tool reads directly from your search index, so the `url` field (populated with SharePoint document URLs during sync) is available to the LLM and used in citation annotations.
+
+### Deploying the Pipeline
+
+```bash
+# 1. Copy and configure the env file
+cp deployment/sharepoint-sync.env.example deployment/sharepoint-sync.env
+# Edit: subscription, SPN credentials, SharePoint site, Foundry project name
+
+# 2. Run the deployment
+./deployment/3-deploy-sharepoint-sync.sh
+```
+
+The script handles 14 steps end-to-end:
+
+| Step | What It Does |
+|------|-------------|
+| 1 | Creates `func-subnet` with VNet integration delegation |
+| 2 | Creates blob container for SharePoint sync |
+| 3 | Creates Function App storage |
+| 4 | Deploys Function App (Elastic Premium, Python, VNet-integrated) |
+| 5 | Locks down Function App storage (private endpoints) |
+| 6 | Deploys Key Vault (private) with SPN secrets |
+| 7 | Configures Function App settings |
+| 8 | RBAC: Function App → Storage |
+| 9 | Shared Private Links: AI Search → Storage + AI Services |
+| 10 | RBAC: AI Search → AI Services |
+| 11 | Creates AI Search index, data source, skillset, indexer |
+| 12 | Firewall rules for Graph API + SharePoint |
+| 13 | Clones sync code and publishes to Function App |
+| **14** | **Creates Foundry agent with `azure_ai_search` tool** |
+
+### Step 14: Foundry Agent Configuration
+
+Step 14 uses the Foundry Agents API (`2025-05-15-preview`) to create an agent version with the `azure_ai_search` tool:
+
+```json
+{
+  "definition": {
+    "kind": "prompt",
+    "model": "gpt-4.1",
+    "instructions": "Answer only from the knowledge-source...",
+    "tools": [{
+      "type": "azure_ai_search",
+      "azure_ai_search": {
+        "indexes": [{
+          "project_connection_id": "/subscriptions/.../connections/aiservicesrzgnsearch",
+          "index_name": "sharepoint-index",
+          "query_type": "simple"
+        }]
+      }
+    }]
+  }
+}
+```
+
+**Prerequisites for Step 14:**
+- A **project connection** to your AI Search service must exist. The script looks for a connection named after your search service. If it doesn't exist, create it in the Foundry portal: **Project → Operate → Admin → Add connection → Azure AI Search**
+- For private VNet setups, the connection **must use Microsoft Entra (keyless) authentication** — key-based auth is not supported with private networking
+
+### How SharePoint URLs Flow Through the Pipeline
+
+```
+SharePoint file.pdf
+    → web_url: https://contoso.sharepoint.com/sites/MySite/Shared Documents/file.pdf
+    → Sync Function stores as blob metadata: sharepoint_web_url=<web_url>
+    → AI Search indexer field mapping: sharepoint_web_url → url
+    → Agent queries index, LLM sees url field in results
+    → Response includes url_citation annotation with SharePoint URL
+    → User clicks citation → opens SharePoint document
+```
+
+### Configuration Reference
+
+Add these to `sharepoint-sync.env` for Step 14:
+
+```bash
+# Foundry Agent Configuration
+AI_SERVICES_NAME=<your-ai-services-name>
+FOUNDRY_PROJECT_NAME=<your-foundry-project-name>
+FOUNDRY_AGENT_NAME=sharepoint-search-agent
+FOUNDRY_AGENT_MODEL=gpt-4.1
+```
