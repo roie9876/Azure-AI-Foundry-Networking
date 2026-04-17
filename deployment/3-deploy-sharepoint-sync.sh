@@ -1431,7 +1431,14 @@ AI_SERVICES="${AI_SERVICES_NAME:-$(echo "$OPENAI_RESOURCE_URI" | sed -E 's|https
 PROJECT="${FOUNDRY_PROJECT_NAME:-}"
 AGENT_NAME="${FOUNDRY_AGENT_NAME:-sharepoint-search-agent}"
 AGENT_MODEL="${FOUNDRY_AGENT_MODEL:-gpt-4.1}"
-AGENT_INSTRUCTIONS="${FOUNDRY_AGENT_INSTRUCTIONS:-Answer only from the knowledge-source.\nYou are not allowed to answer from the internet.\nIf you don't know the answer say I don't know.\n\nWhen citing sources, use the document URL from the search results.}"
+# Default instructions. Use $'...' ANSI-C quoting so \n becomes a real newline
+# (bash ${VAR:-default} does NOT interpret escapes, so \n would be sent literally).
+# The instructions pin citations to the `url` field and forbid the model from
+# quoting URLs found inside the chunk/text body (PDFs sometimes contain internal
+# intranet URLs like http://portalp3.mod.int:... that must NOT be cited) or tool
+# metadata URLs (e.g. the search service endpoint itself).
+DEFAULT_AGENT_INSTRUCTIONS=$'Answer only from the knowledge source (Azure AI Search index).\nYou are not allowed to answer from the internet or from prior knowledge.\nIf the answer is not in the search results, say "I don\'t know".\n\nCitation rules (STRICT):\n- Use ONLY the value of the `url` field of a search result as the citation link.\n- NEVER cite or invent URLs found inside the `chunk`, `text`, or `content` body of a result — those are document contents, not citation targets.\n- NEVER cite the Azure AI Search service endpoint, tool endpoints, or any *.search.windows.net URL.\n- If a result has no `url` field, cite it by `title` only (no link).'
+AGENT_INSTRUCTIONS="${FOUNDRY_AGENT_INSTRUCTIONS:-$DEFAULT_AGENT_INSTRUCTIONS}"
 
 if [ -z "$PROJECT" ]; then
   echo "  ⚠️  FOUNDRY_PROJECT_NAME not set — skipping agent configuration."
