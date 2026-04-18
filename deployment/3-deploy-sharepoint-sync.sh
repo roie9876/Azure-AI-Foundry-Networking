@@ -75,6 +75,70 @@ if [ ${#MISSING[@]} -gt 0 ]; then
   exit 1
 fi
 
+###############################################################################
+# RAG tuning defaults (all optional — override in sharepoint-sync.env)
+#
+# Changing these triggers a full rebuild of index/skillset/indexer (Step 11
+# deletes + recreates these artifacts on every run by design). Data in the
+# index is re-materialized on the next indexer run.
+###############################################################################
+# --- Chunking (SplitSkill) ---
+: "${CHUNK_SPLIT_MODE:=pages}"          # pages | sentences
+: "${CHUNK_UNIT:=characters}"           # characters | azureOpenAITokens
+: "${CHUNK_SIZE:=2000}"                 # maximumPageLength  (chars) OR maximumChunkLength (tokens)
+: "${CHUNK_OVERLAP:=200}"               # pageOverlapLength  (chars) OR chunkOverlapLength (tokens)
+# --- Vector index (HNSW) ---
+: "${VECTOR_METRIC:=cosine}"            # cosine | euclidean | dotProduct
+: "${HNSW_M:=4}"                        # neighbors per node (4..10)
+: "${HNSW_EF_CONSTRUCTION:=400}"        # build-time quality (100..1000)
+: "${HNSW_EF_SEARCH:=500}"              # query-time quality (100..1000)
+# --- Semantic ranker (index-level, enabled by default — free quality bump) ---
+: "${SEMANTIC_CONFIG_ENABLED:=true}"    # true | false
+# --- Indexer ---
+: "${INDEXER_MAX_FAILED_ITEMS:=-1}"     # -1 = unlimited, else integer
+: "${INDEXER_MAX_FAILED_PER_BATCH:=-1}" # -1 = unlimited, else integer
+: "${INDEXER_SCHEDULE_INTERVAL:=PT1H}"  # ISO-8601 duration (PT15M, PT1H, P1D, ...)
+# --- Foundry agent (azure_ai_search tool) ---
+# query_type controls how the agent queries the index:
+#   simple          keyword only (fastest, no vector recall)
+#   semantic        keyword + semantic reranking (recommended default)
+#   vector          pure vector similarity
+#   vectorSemanticHybrid  keyword + vector + semantic reranker (best quality, highest latency)
+: "${AGENT_QUERY_TYPE:=semantic}"
+# --- Agentic retrieval (Knowledge Base via MCP) — Phase 3, opt-in ---
+# When true, Step 14b creates/updates a second agent (AGENTIC_AGENT_NAME)
+# that uses AI Search agentic retrieval via the Knowledge Base MCP endpoint.
+# The primary agent (FOUNDRY_AGENT_NAME) is untouched — they coexist so you
+# can A/B compare in the Foundry Playground.
+: "${USE_AGENTIC_RETRIEVAL:=false}"     # true | false
+: "${AGENTIC_KS_NAME:=sharepoint-ks}"
+: "${AGENTIC_KB_NAME:=sharepoint-kb}"
+: "${AGENTIC_AGENT_NAME:=sharepoint-agentic}"
+: "${AGENTIC_PROJECT_CONN_NAME:=sharepoint-kb-mcp}"
+: "${AGENTIC_PLANNER_MODEL:=${FOUNDRY_AGENT_MODEL:-gpt-4.1}}"
+: "${AGENTIC_REASONING_EFFORT:=low}"    # minimal | low | medium
+: "${AGENTIC_OUTPUT_MODE:=extractiveData}"  # extractiveData | answerSynthesis
+
+# Validate enums (fail fast on typos)
+_validate_enum() {
+  local name="$1"; local value="$2"; shift 2
+  local allowed=("$@")
+  for v in "${allowed[@]}"; do [ "$value" = "$v" ] && return 0; done
+  echo "❌ Invalid $name='$value' — expected one of: ${allowed[*]}"; exit 1
+}
+_validate_enum CHUNK_SPLIT_MODE       "$CHUNK_SPLIT_MODE"       pages sentences
+_validate_enum CHUNK_UNIT             "$CHUNK_UNIT"             characters azureOpenAITokens
+_validate_enum VECTOR_METRIC          "$VECTOR_METRIC"          cosine euclidean dotProduct
+_validate_enum SEMANTIC_CONFIG_ENABLED "$SEMANTIC_CONFIG_ENABLED" true false
+_validate_enum AGENT_QUERY_TYPE       "$AGENT_QUERY_TYPE"       simple semantic vector vectorSemanticHybrid
+_validate_enum USE_AGENTIC_RETRIEVAL  "$USE_AGENTIC_RETRIEVAL"  true false
+_validate_enum AGENTIC_REASONING_EFFORT "$AGENTIC_REASONING_EFFORT" minimal low medium
+_validate_enum AGENTIC_OUTPUT_MODE    "$AGENTIC_OUTPUT_MODE"    extractiveData answerSynthesis
+case "$INDEXER_SCHEDULE_INTERVAL" in
+  PT[0-9]*M|PT[0-9]*H|P[0-9]*D|P[0-9]*DT[0-9]*H) ;;
+  *) echo "❌ Invalid INDEXER_SCHEDULE_INTERVAL='$INDEXER_SCHEDULE_INTERVAL' (expected ISO-8601 e.g. PT15M, PT1H, P1D)"; exit 1 ;;
+esac
+
 # Map variables
 SUBSCRIPTION="$SUBSCRIPTION_ID"
 # DNS_SUBSCRIPTION: private DNS zones are often in a central hub/connectivity
@@ -1025,6 +1089,24 @@ search_put() {
 }
 
 # --- Index (vector search + semantic config, from original repo) ---
+# Semantic config is included only when SEMANTIC_CONFIG_ENABLED=true.
+if [ "$SEMANTIC_CONFIG_ENABLED" = "true" ]; then
+  SEMANTIC_JSON=',
+  "semantic":{
+    "defaultConfiguration":"'"${IDX}"'-semantic-configuration",
+    "configurations":[{
+      "name":"'"${IDX}"'-semantic-configuration",
+      "prioritizedFields":{
+        "titleField":{"fieldName":"title"},
+        "prioritizedContentFields":[{"fieldName":"chunk"}],
+        "prioritizedKeywordsFields":[]
+      }
+    }]
+  }'
+else
+  SEMANTIC_JSON=""
+fi
+
 search_put "indexes/${IDX}" "Index ${IDX}" '{
   "name": "'"${IDX}"'",
   "fields": [
@@ -1042,23 +1124,12 @@ search_put "indexes/${IDX}" "Index ${IDX}" '{
     {"name":"original_file_name","type":"Edm.String","searchable":true,"filterable":false,"retrievable":true,"stored":true},
     {"name":"url","type":"Edm.String","searchable":false,"filterable":false,"retrievable":true,"stored":true}
   ],
-  "similarity":{"@odata.type":"#Microsoft.Azure.Search.BM25Similarity"},
-  "semantic":{
-    "defaultConfiguration":"'"${IDX}"'-semantic-configuration",
-    "configurations":[{
-      "name":"'"${IDX}"'-semantic-configuration",
-      "prioritizedFields":{
-        "titleField":{"fieldName":"title"},
-        "prioritizedContentFields":[{"fieldName":"chunk"}],
-        "prioritizedKeywordsFields":[]
-      }
-    }]
-  },
+  "similarity":{"@odata.type":"#Microsoft.Azure.Search.BM25Similarity"}'"${SEMANTIC_JSON}"',
   "vectorSearch":{
     "algorithms":[{
       "name":"'"${IDX}"'-algorithm",
       "kind":"hnsw",
-      "hnswParameters":{"metric":"cosine","m":4,"efConstruction":400,"efSearch":500}
+      "hnswParameters":{"metric":"'"${VECTOR_METRIC}"'","m":'"${HNSW_M}"',"efConstruction":'"${HNSW_EF_CONSTRUCTION}"',"efSearch":'"${HNSW_EF_SEARCH}"'}
     }],
     "profiles":[{
       "name":"'"${IDX}"'-azureOpenAi-text-profile",
@@ -1077,7 +1148,7 @@ search_put "indexes/${IDX}" "Index ${IDX}" '{
     "compressions":[]
   }
 }'
-echo "  ✅ Index: ${IDX} (vector + semantic)"
+echo "  ✅ Index: ${IDX} (HNSW m=${HNSW_M} efC=${HNSW_EF_CONSTRUCTION} efS=${HNSW_EF_SEARCH} metric=${VECTOR_METRIC}, semantic=${SEMANTIC_CONFIG_ENABLED})"
 
 # --- Data Source (ResourceId — managed identity, soft-delete detection) ---
 STORAGE_RESOURCE_ID="/subscriptions/$SUBSCRIPTION/resourceGroups/$SPOKE_RG/providers/Microsoft.Storage/storageAccounts/$STORAGE_NAME"
@@ -1145,9 +1216,10 @@ search_put "skillsets/${SS}" "Skillset ${SS}" '{
       "description": "Split skill to chunk documents",
       "context": "/document",
       "defaultLanguageCode": "en",
-      "textSplitMode": "pages",
-      "maximumPageLength": 2000,
-      "pageOverlapLength": 200,
+      "textSplitMode": "'"${CHUNK_SPLIT_MODE}"'",
+      "unit": "'"${CHUNK_UNIT}"'",
+      "maximumPageLength": '"${CHUNK_SIZE}"',
+      "pageOverlapLength": '"${CHUNK_OVERLAP}"',
       "inputs": [{"name":"text","source":"/document/mergedText"}],
       "outputs": [{"name":"textItems","targetName":"pages"}]
     },
@@ -1194,8 +1266,8 @@ search_put "indexers/${IDXR}" "Indexer ${IDXR}" '{
   "skillsetName": "'"${SS}"'",
   "targetIndexName": "'"${IDX}"'",
   "parameters": {
-    "maxFailedItems": -1,
-    "maxFailedItemsPerBatch": -1,
+    "maxFailedItems": '"${INDEXER_MAX_FAILED_ITEMS}"',
+    "maxFailedItemsPerBatch": '"${INDEXER_MAX_FAILED_PER_BATCH}"',
     "configuration": {
       "executionEnvironment": "private",
       "dataToExtract": "contentAndMetadata",
@@ -1207,7 +1279,7 @@ search_put "indexers/${IDXR}" "Indexer ${IDXR}" '{
       "indexStorageMetadataOnlyForOversizedDocuments": true
     }
   },
-  "schedule": {"interval": "PT1H"},
+  "schedule": {"interval": "'"${INDEXER_SCHEDULE_INTERVAL}"'"},
   "fieldMappings": [
     {"sourceFieldName":"metadata_storage_name","targetFieldName":"title"},
     {"sourceFieldName":"caseId","targetFieldName":"case_id"},
@@ -1216,7 +1288,7 @@ search_put "indexers/${IDXR}" "Indexer ${IDXR}" '{
   ],
   "outputFieldMappings": []
 }'
-echo "  ✅ Indexer: ${IDXR} (skillset=${SS}, hourly, private execution)"
+echo "  ✅ Indexer: ${IDXR} (skillset=${SS}, schedule=${INDEXER_SCHEDULE_INTERVAL}, private execution)"
 
 # Re-lock AI Search only if we toggled it open
 if [ "$SEARCH_ACCESS_MODE" = "private" ]; then
@@ -1475,8 +1547,30 @@ else
         AGENT_MODEL_ENV="$AGENT_MODEL" \
         SEARCH_CONNECTION_ID_ENV="$SEARCH_CONNECTION_ID" \
         INDEX_NAME_ENV="$IDX" \
+        AGENT_QUERY_TYPE_ENV="$AGENT_QUERY_TYPE" \
+        SEMANTIC_CONFIG_NAME_ENV="${IDX}-semantic-configuration" \
+        SEMANTIC_CONFIG_ENABLED_ENV="$SEMANTIC_CONFIG_ENABLED" \
         python3 -c "
 import json, os
+qt = os.environ['AGENT_QUERY_TYPE_ENV']
+uses_vector   = qt in ('vector', 'vectorSemanticHybrid')
+uses_semantic = qt in ('semantic', 'vectorSemanticHybrid')
+if uses_semantic and os.environ['SEMANTIC_CONFIG_ENABLED_ENV'] != 'true':
+    raise SystemExit(\"AGENT_QUERY_TYPE=\" + qt + \" requires SEMANTIC_CONFIG_ENABLED=true\")
+idx_cfg = {
+    'project_connection_id': os.environ['SEARCH_CONNECTION_ID_ENV'],
+    'index_name': os.environ['INDEX_NAME_ENV'],
+    'query_type': qt,
+    'fieldsMapping': {
+        'urlField': 'url',
+        'titleField': 'title',
+        'contentFields': ['chunk'],
+        'filepathField': 'title',
+        'vectorFields': ['text_vector'] if uses_vector else []
+    }
+}
+if uses_semantic:
+    idx_cfg['semantic_configuration'] = os.environ['SEMANTIC_CONFIG_NAME_ENV']
 body = {
     'definition': {
         'kind': 'prompt',
@@ -1484,20 +1578,7 @@ body = {
         'instructions': os.environ['AGENT_INSTRUCTIONS_ENV'],
         'tools': [{
             'type': 'azure_ai_search',
-            'azure_ai_search': {
-                'indexes': [{
-                    'project_connection_id': os.environ['SEARCH_CONNECTION_ID_ENV'],
-                    'index_name': os.environ['INDEX_NAME_ENV'],
-                    'query_type': 'simple',
-                    'fieldsMapping': {
-                        'urlField': 'url',
-                        'titleField': 'title',
-                        'contentFields': ['chunk'],
-                        'filepathField': 'title',
-                        'vectorFields': []
-                    }
-                }]
-            }
+            'azure_ai_search': {'indexes': [idx_cfg]}
         }]
     }
 }
@@ -1514,7 +1595,7 @@ print(json.dumps(body))
 
       if [ "$AGENT_VERSION" != "?" ] && [ -n "$AGENT_VERSION" ]; then
         echo "  ✅ Agent '${AGENT_NAME}' version ${AGENT_VERSION} created"
-        echo "     Tool: azure_ai_search → ${IDX}"
+        echo "     Tool: azure_ai_search → ${IDX} (query_type=${AGENT_QUERY_TYPE})"
         echo "     Model: ${AGENT_MODEL}"
         echo "     Citations: url_citation (links to SharePoint document URLs)"
       else
@@ -1526,6 +1607,193 @@ print(json.dumps(body))
   fi
 fi
 echo ""
+
+###############################################################################
+# 14b. Agentic Retrieval (opt-in, coexists with Step 14's agent)
+#
+# Gated on USE_AGENTIC_RETRIEVAL=true. Creates:
+#   - AI Search Knowledge Source (wrapper over sharepoint-index)
+#   - AI Search Knowledge Base (agentic retrieval with subquery planner)
+#   - Foundry project connection (RemoteTool → KB MCP endpoint)
+#   - Second Foundry agent using MCPTool
+#
+# The primary agent from Step 14 is NOT modified — the two agents coexist so
+# you can A/B compare them in the Foundry Playground. Toggle the flag off to
+# skip this section; existing resources are left untouched.
+###############################################################################
+if [ "$USE_AGENTIC_RETRIEVAL" != "true" ]; then
+  echo "──── Step 14b: Agentic Retrieval (SKIPPED — USE_AGENTIC_RETRIEVAL=false) ────"
+  echo ""
+else
+  echo "──── Step 14b: Agentic Retrieval (Knowledge Source + KB + MCP agent) ────"
+
+  if [ -z "${PROJECT:-}" ] || [ -z "${AGENT_TOKEN:-}" ]; then
+    echo "  ⚠️  FOUNDRY_PROJECT_NAME not set or auth token missing — skipping."
+  else
+    KS_NAME="$AGENTIC_KS_NAME"
+    KB_NAME="$AGENTIC_KB_NAME"
+    KB_AGENT_NAME="$AGENTIC_AGENT_NAME"
+    PROJECT_CONN_NAME="$AGENTIC_PROJECT_CONN_NAME"
+    KB_API_VER="2025-11-01-preview"
+    AOAI_ENDPOINT="https://${AI_SERVICES}.cognitiveservices.azure.com"
+
+    # Need admin identities/IDs for RBAC + ARM connection PUT
+    SEARCH_MI=$(az search service show -g "$SPOKE_RG" -n "$AI_SEARCH_NAME" --query identity.principalId -o tsv)
+    PROJECT_MI=$(az cognitiveservices account show -g "$SPOKE_RG" -n "$AI_SERVICES" --query identity.principalId -o tsv)
+    SEARCH_ID=$(az search service show -g "$SPOKE_RG" -n "$AI_SEARCH_NAME" --query id -o tsv)
+    AI_SERVICES_ID=$(az cognitiveservices account show -g "$SPOKE_RG" -n "$AI_SERVICES" --query id -o tsv)
+
+    # --- RBAC for agentic retrieval ---
+    # Search MI → Cognitive Services User on AI Services (KB calls planner LLM)
+    # Project MI → Search Index Data Reader + Search Service Contributor on Search
+    az role assignment create \
+      --assignee-object-id "$SEARCH_MI" --assignee-principal-type ServicePrincipal \
+      --role "Cognitive Services User" --scope "$AI_SERVICES_ID" \
+      --output none 2>/dev/null && echo "  ✅ Search MI → Cognitive Services User on AI Services" \
+      || echo "  ℹ️  Search MI role already present"
+    az role assignment create \
+      --assignee-object-id "$PROJECT_MI" --assignee-principal-type ServicePrincipal \
+      --role "Search Index Data Reader" --scope "$SEARCH_ID" \
+      --output none 2>/dev/null && echo "  ✅ Project MI → Search Index Data Reader on Search" \
+      || echo "  ℹ️  Project MI Search Index Data Reader already present"
+    az role assignment create \
+      --assignee-object-id "$PROJECT_MI" --assignee-principal-type ServicePrincipal \
+      --role "Search Service Contributor" --scope "$SEARCH_ID" \
+      --output none 2>/dev/null && echo "  ✅ Project MI → Search Service Contributor on Search" \
+      || echo "  ℹ️  Project MI Search Service Contributor already present"
+
+    # --- Knowledge Source ---
+    KS_BODY=$(cat <<EOF
+{
+  "name": "${KS_NAME}",
+  "kind": "searchIndex",
+  "description": "SharePoint index wrapper for agentic retrieval",
+  "searchIndexParameters": {
+    "searchIndexName": "${IDX}",
+    "sourceDataFields": [
+      { "name": "title" },
+      { "name": "chunk" },
+      { "name": "url" }
+    ]
+  }
+}
+EOF
+)
+    KS_HTTP=$(curl -sS -o /tmp/ks-resp.json -w "%{http_code}" \
+      -X PUT "${SEARCH_ENDPOINT}/knowledgesources/${KS_NAME}?api-version=${KB_API_VER}" \
+      -H "api-key: $SEARCH_KEY" -H "Content-Type: application/json" --data "$KS_BODY")
+    if [[ "$KS_HTTP" =~ ^20[0-9]$ ]]; then
+      echo "  ✅ Knowledge Source: ${KS_NAME}"
+    else
+      echo "  ❌ KS failed (HTTP $KS_HTTP):"; cat /tmp/ks-resp.json; echo; exit 1
+    fi
+
+    # --- Knowledge Base ---
+    KB_BODY=$(cat <<EOF
+{
+  "name": "${KB_NAME}",
+  "description": "Agentic retrieval KB over SharePoint",
+  "knowledgeSources": [ { "name": "${KS_NAME}" } ],
+  "models": [
+    {
+      "kind": "azureOpenAI",
+      "azureOpenAIParameters": {
+        "resourceUri": "${AOAI_ENDPOINT}",
+        "deploymentId": "${AGENTIC_PLANNER_MODEL}",
+        "modelName": "${AGENTIC_PLANNER_MODEL}"
+      }
+    }
+  ],
+  "retrievalReasoningEffort": { "kind": "${AGENTIC_REASONING_EFFORT}" },
+  "outputMode": "${AGENTIC_OUTPUT_MODE}"
+}
+EOF
+)
+    KB_HTTP=$(curl -sS -o /tmp/kb-resp.json -w "%{http_code}" \
+      -X PUT "${SEARCH_ENDPOINT}/knowledgebases/${KB_NAME}?api-version=${KB_API_VER}" \
+      -H "api-key: $SEARCH_KEY" -H "Content-Type: application/json" --data "$KB_BODY")
+    if [[ "$KB_HTTP" =~ ^20[0-9]$ ]]; then
+      echo "  ✅ Knowledge Base: ${KB_NAME} (planner=${AGENTIC_PLANNER_MODEL}, effort=${AGENTIC_REASONING_EFFORT}, mode=${AGENTIC_OUTPUT_MODE})"
+    else
+      echo "  ❌ KB failed (HTTP $KB_HTTP):"; cat /tmp/kb-resp.json; echo; exit 1
+    fi
+
+    # --- Foundry project connection → KB MCP endpoint (ARM plane) ---
+    MCP_ENDPOINT="${SEARCH_ENDPOINT}/knowledgebases/${KB_NAME}/mcp?api-version=${KB_API_VER}"
+    ARM_TOKEN=$(az account get-access-token --resource https://management.azure.com/ --query accessToken -o tsv)
+    CONN_BODY=$(cat <<EOF
+{
+  "name": "${PROJECT_CONN_NAME}",
+  "type": "Microsoft.MachineLearningServices/workspaces/connections",
+  "properties": {
+    "authType": "ProjectManagedIdentity",
+    "category": "RemoteTool",
+    "target": "${MCP_ENDPOINT}",
+    "isSharedToAll": true,
+    "audience": "https://search.azure.com/",
+    "metadata": { "ApiType": "Azure" }
+  }
+}
+EOF
+)
+    CONN_URL="https://management.azure.com${AI_SERVICES_ID}/projects/${PROJECT}/connections/${PROJECT_CONN_NAME}?api-version=2025-10-01-preview"
+    CONN_HTTP=$(curl -sS -o /tmp/conn-resp.json -w "%{http_code}" \
+      -X PUT "$CONN_URL" -H "Authorization: Bearer $ARM_TOKEN" \
+      -H "Content-Type: application/json" --data "$CONN_BODY")
+    if [[ "$CONN_HTTP" =~ ^20[0-9]$ ]]; then
+      CONN_ID=$(python3 -c "import json; print(json.load(open('/tmp/conn-resp.json')).get('id',''))")
+      echo "  ✅ Project connection: ${PROJECT_CONN_NAME}"
+    else
+      echo "  ❌ Project connection failed (HTTP $CONN_HTTP):"; cat /tmp/conn-resp.json; echo; exit 1
+    fi
+
+    # --- Second Foundry agent using MCP tool ---
+    # Citation rendering note:
+    # The KB MCP tool returns references with sourceData.url, but Foundry's
+    # Playground auto-numbers them as "doc_0 / doc_1 / ..." pills unless the
+    # model text itself contains bare URLs. Same bare-URL protocol as the
+    # primary agent's v14 prompt — print URL on its own line, no markdown,
+    # no backticks, no **bold** (Foundry rewrites all of those into citation
+    # markers and hides the real URL).
+    AGENTIC_INSTRUCTIONS_DEFAULT=$'You are a grounded assistant over the SharePoint knowledge source (AI Search Knowledge Base `sharepoint-kb`).\n\n- For EVERY user question, call the `knowledge_base_retrieve` tool first.\n- Answer ONLY from the tool results. Never answer from general knowledge or the internet.\n- If the tool returns nothing relevant, reply exactly: "I don\'t know — the answer is not in the knowledge source."\n\nHow to extract the SharePoint URL for citations:\nThe tool response contains a `references` array. Each entry has:\n  - `sourceData.title` — the document title\n  - `sourceData.url`   — the SharePoint web URL (starts with https:// and contains `sharepoint.com`)\nUse `sourceData.url` as the citation target. Ignore the auto-generated `doc_0 / doc_1` ref IDs — those are internal.\n\nCitation output format — CRITICAL (Foundry post-processes your output and will break anything it recognizes as a citation anchor):\n- DO NOT use markdown link syntax [text](url). Foundry overwrites the URL with a `doc_N` marker.\n- DO NOT use markdown bold or italic (**text** or *text*). Foundry replaces styled text with a citation marker.\n- DO NOT wrap the URL in backticks (that makes it non-clickable).\n- DO print the URL as a bare, plain URL on its own line. The Playground markdown renderer auto-linkifies bare URLs, and the citation rewriter leaves them alone.\n\nAt the end of your answer, on a new paragraph, write the exact heading line:\nמקורות:\n\nThen, for each distinct document you cited, print TWO consecutive lines:\n  Line 1: the plain document title from `sourceData.title` (no markdown, no bold, no backticks).\n  Line 2: the bare SharePoint URL from `sourceData.url` (no markdown, no backticks, no surrounding text — just the URL).\nLeave a blank line between sources.\n\nRules:\n- The URL must start with https:// and contain `sharepoint.com`. If `sourceData.url` is missing or does not match, omit that source (do not invent URLs).\n- De-duplicate sources by URL.\n- Reply in the same language as the user\'s question (Hebrew in → Hebrew out).'
+    AGENTIC_INSTRUCTIONS="${AGENTIC_AGENT_INSTRUCTIONS:-$AGENTIC_INSTRUCTIONS_DEFAULT}"
+    AGENTIC_BODY=$(AGENT_INSTR="$AGENTIC_INSTRUCTIONS" \
+      AGENT_MODEL_ENV="${AGENTIC_PLANNER_MODEL}" \
+      CONN_ID="$CONN_ID" MCP_URL="$MCP_ENDPOINT" \
+      python3 -c "
+import json, os
+body = {
+  'definition': {
+    'kind': 'prompt',
+    'model': os.environ['AGENT_MODEL_ENV'],
+    'instructions': os.environ['AGENT_INSTR'],
+    'tools': [{
+      'type': 'mcp',
+      'server_label': 'knowledge_base',
+      'server_url': os.environ['MCP_URL'],
+      'require_approval': 'never',
+      'allowed_tools': ['knowledge_base_retrieve'],
+      'project_connection_id': os.environ['CONN_ID']
+    }]
+  }
+}
+print(json.dumps(body))")
+    AGENTIC_HTTP=$(curl -sS -o /tmp/agentic-resp.json -w "%{http_code}" \
+      -X POST "${FOUNDRY_ENDPOINT}/agents/${KB_AGENT_NAME}/versions?api-version=${AGENT_API_VER}" \
+      -H "Authorization: Bearer $AGENT_TOKEN" -H "Content-Type: application/json" \
+      --data "$AGENTIC_BODY")
+    if [[ "$AGENTIC_HTTP" =~ ^20[0-9]$ ]]; then
+      AGENTIC_VER=$(python3 -c "import json; print(json.load(open('/tmp/agentic-resp.json')).get('version','?'))")
+      echo "  ✅ Agent '${KB_AGENT_NAME}' version ${AGENTIC_VER} created (coexists with '${AGENT_NAME}')"
+      echo "     Tool: mcp → knowledgebases/${KB_NAME} (agentic retrieval)"
+      echo "     Model: ${AGENTIC_PLANNER_MODEL}"
+    else
+      echo "  ⚠️  Agent '${KB_AGENT_NAME}' creation failed (HTTP $AGENTIC_HTTP):"
+      cat /tmp/agentic-resp.json; echo
+    fi
+  fi
+  echo ""
+fi
 
 ###############################################################################
 # Summary
