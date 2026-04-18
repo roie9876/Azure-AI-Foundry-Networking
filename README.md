@@ -1467,17 +1467,16 @@ Register an Azure Function as a **tool** on the Foundry agent. The function rece
 
 Trade-off vs. Pattern A: the agent sees the tool call in its trace (more transparent, easier to debug) but you now have to harden the Function (rate limits, token validation, etc.).
 
-#### Pattern C — Knowledge Source (NOT recommended for secured SharePoint data)
+#### Pattern C — Knowledge Source / Knowledge Base (NOT recommended for secured SharePoint data)
 
-Wiring the index as a "Knowledge Source" in the Foundry portal is the easiest path but it:
+Wiring the index as a "Knowledge Source" + "Knowledge Base" in the Foundry portal is the easiest path but it:
 
-- Runs the search as the agent's identity → **no ACL enforcement at all**.
-- Returns only `ref_id`, `title`, `content` to the LLM — the `url`, `acl_*`, and `purview_*` fields are stripped by the KB MCP wrapper.
-- Makes citation URLs point at the Foundry MCP endpoint, not at the SharePoint document.
+- Runs the search as the agent's identity → **no ACL enforcement at all**. The KB planner builds its own subqueries and there is no way to inject a per-user `$filter` at the agent boundary.
+- Surfaces whatever fields you list in `sourceDataFields` (citation URLs do work — see [§14.7](#147-azure_ai_search-tool-vs-knowledge-source--why-the-default-is-the-tool)) — but `acl_*` and `purview_*` are not used to filter results, only inspected.
 
 Use this **only** when every agent user is allowed to see every synced document (e.g. a fully public knowledge base). For permission-scoped content, you *must* use Pattern A or B.
 
-See [§14.7 below](#147-azure_ai_search-tool-vs-knowledge-source--why-we-picked-the-tool) for the detailed comparison that led to this choice.
+See [§14.7 below](#147-azure_ai_search-tool-vs-knowledge-source--why-the-default-is-the-tool) for the detailed comparison.
 
 ### 14.6 Verifying That ACLs Landed Correctly
 
@@ -1504,65 +1503,115 @@ curl -s "https://$SEARCH_NAME.search.windows.net/indexes/sharepoint-index/docs?a
 
 If (2) returns the documents you expect and (3) returns zero, your ACL pipeline is correct and ready to be enforced by Pattern A or B.
 
-### 14.7 `azure_ai_search` Tool vs. Knowledge Source — Why We Picked the Tool
+### 14.7 `azure_ai_search` Tool vs. Knowledge Source — Why the Default Is the Tool
 
-Foundry gives you two ways to ground an agent in an AI Search index. The deploy script uses the **`azure_ai_search` built-in tool**, not a **Knowledge Source**. This is a deliberate design decision — here is why.
+> ⚠️ **Updated (April 2026):** an earlier version of this section claimed the Knowledge Source / KB MCP path could not surface document URLs in citations. That claim is **no longer accurate** — the KB API was extended to honor `sourceDataFields`, and our agentic retrieval prototype ([§14.7.1](#1471-opt-in-agentic-retrieval-knowledge-base-via-mcp-side-by-side)) confirmed that `references[].sourceData.url` is returned correctly. Both paths can render proper SharePoint citations today, with the right prompt. The choice between them is now about **query control**, **ACL pushdown**, and **complexity**, not citations.
+
+Foundry gives you two ways to ground an agent in an AI Search index. The deploy script provisions the **`azure_ai_search` built-in tool** by default, and **optionally** ([`USE_AGENTIC_RETRIEVAL=true`](#14102-agentic-retrieval-opt-in-coexists-with-the-primary-agent)) a second agent that uses a **Knowledge Base** via MCP. They coexist so you can A/B compare in the Foundry Playground.
 
 #### The two options
 
 ```
-Option 1 — Knowledge Source (via Knowledge Base MCP)
-┌───────┐    ┌──────────────┐    ┌─────────────────┐    ┌──────────┐
-│ Agent │───▶│  KB MCP Tool │───▶│ Knowledge Source│───▶│ AI Search│
-└───────┘    │ (Foundry-    │    │ (wrapper on top │    └──────────┘
-             │  managed)    │    │  of the index)  │
-             └──────────────┘    └─────────────────┘
+Option 1 — Knowledge Base (agentic retrieval, via MCP)
+┌───────┐    ┌──────────────┐    ┌──────────────────┐    ┌──────────┐
+│ Agent │───▶│  KB MCP Tool │───▶│ Knowledge Base + │───▶│ AI Search│
+└───────┘    │ (Foundry-    │    │ Knowledge Source │    └──────────┘
+             │  managed)    │    │ planner LLM      │
+             └──────────────┘    │ subquery fan-out │
+                                 └──────────────────┘
 
-Option 2 — azure_ai_search built-in tool (what this script deploys)
+Option 2 — azure_ai_search built-in tool (default)
 ┌───────┐    ┌─────────────────┐    ┌──────────┐
 │ Agent │───▶│ azure_ai_search │───▶│ AI Search│
 └───────┘    │ built-in tool   │    └──────────┘
              └─────────────────┘
 ```
 
-#### Side-by-side comparison
+#### Side-by-side comparison (corrected)
 
-| Aspect | Knowledge Source (KB MCP) | `azure_ai_search` Tool |
+| Aspect | Knowledge Base (KB MCP) | `azure_ai_search` Tool |
 |---|---|---|
-| **Citation URL** | Points to the **Foundry MCP endpoint** (`https://...services.ai.azure.com/api/projects/.../mcp`) — useless for the end user | Points to the **actual document URL** from the index's `url` field (e.g. the SharePoint page) |
-| **Fields returned to the LLM** | Only `ref_id`, `title`, `content` — hard-coded. `sourceDataFields` config is **silently ignored** | **All retrievable fields** in the index (`url`, `acl_user_ids`, `purview_label_name`, etc.) |
-| **Query control** | Limited — the KB decides how to query | Full control: `query_type` (simple / semantic / vector), filters, top K |
-| **ACL filtering** | Not possible — no way to pass a `$filter` | Possible via the `filter` parameter |
-| **Output modes** | `extractiveData` or `answerSynthesis` (neither exposes `url`) | Raw search results; the LLM formats them |
-| **Abstraction layers** | Extra hop through Foundry's KB service | Direct — fewer moving parts to debug |
-| **When it shines** | Multi-source RAG where Foundry should orchestrate SharePoint + web + files | Single-index scenarios where you want full control + proper citations |
+| **Citation URL** | ✅ Available — `references[].sourceData.url` is returned and the agent can render it as a clickable link with the right prompt | ✅ Available — `url` field returned with every search result |
+| **Fields returned to the LLM** | Whatever you list in the KS `sourceDataFields` (we expose `title`, `chunk`, `url`) | All retrievable fields in the index (`url`, `acl_user_ids`, `purview_label_name`, etc.) |
+| **Query strategy** | Planner LLM decomposes the question into N subqueries, each runs vector + semantic on the index, results are merged + dedup'd | Single query per agent turn — agent picks `query_type` (simple / semantic / vector / hybrid) and the index handles it |
+| **Query control** | Indirect — you set `retrievalReasoningEffort` (minimal/low/medium) and `outputMode` (extractiveData/answerSynthesis); the planner picks the actual queries | Direct — full control over `query_type`, `filter`, `top_k`, `fieldsMapping` per call |
+| **ACL `$filter` push-down** | ❌ No way to inject a per-request `$filter` from the agent / app layer | ✅ Possible via the tool's `filter` parameter — enables Pattern A from [§14.5](#145-how-the-foundry-agent-knows-about-permissions--spoiler-it-doesnt-not-by-itself) |
+| **Cost per turn** | Higher — planner model tokens + N parallel index queries + KB orchestration | Lower — one index query, no planner |
+| **Latency** | Higher — planner round-trip + parallel fan-out | Lower — single query |
+| **Setup complexity** | Three new objects (KS, KB, project connection) + two extra RBAC grants | Just the existing index connection |
+| **When it shines** | Multi-part comparative questions ("how does X compare to Y, and which policy covers Z?") where subquery decomposition genuinely helps recall | Single, focused questions; per-user ACL filtering; lowest cost / latency |
 
-#### Why we switched (concrete reason)
+#### What changed since the original investigation
 
-Originally the script used a Knowledge Source. Then the question came up: *"why does the citation link go to the MCP endpoint instead of the SharePoint doc?"*
+| Original claim (wrong today) | Current reality |
+|---|---|
+| KB MCP returns only `ref_id, title, content` — fields are hardcoded | `references[].sourceData` honors `sourceDataFields` from the KS — we get `chunk_id, chunk, title, url` |
+| `sourceDataFields` is silently ignored | It is honored |
+| Citation URL goes to the MCP endpoint, useless | The URL is in the response; the agent renders it correctly **if the prompt instructs it to print bare URLs** (see Step 14b's instructions in [3-deploy-sharepoint-sync.sh](deployment/3-deploy-sharepoint-sync.sh)) |
+| There is no way to get the document URL into the citation with KB | Works end-to-end. Smoke test: open `sharepoint-agentic` in Playground, ask any question, see clickable SharePoint URLs in `מקורות:` block |
 
-We tried every workaround:
+The misdiagnosis was a **prompt issue**, not an API limitation. Foundry's Playground auto-numbers references as `doc_0 / doc_1` pills unless the model text itself prints bare URLs. The original KB agent's prompt was vague (`"cite using references"`), so the model defaulted to the auto-numbered pills and the URL never appeared in the rendered output. Once we ported the bare-URL protocol from the primary agent's v14 prompt to the agentic agent (`sharepoint-agentic` v2), citations rendered correctly.
 
-1. Added `url` to the index — ✅ populated correctly with SharePoint document URLs
-2. Added `sourceDataFields: [{name:"url"}]` to the Knowledge Source — ✅ API accepted it, but ❌ **no effect on MCP output**
-3. Tested both `outputMode: extractiveData` and `answerSynthesis` — both still return only `ref_id, title, content`
-4. Inspected the raw MCP tool response directly — confirmed Foundry's KB service strips everything except those 3 fields
+#### Why the tool is still the default
 
-**Conclusion:** with Knowledge Source there is no way to get the document URL into the citation. It is a hard limitation of the KB MCP wrapper today.
+Two reasons survive the correction:
 
-The `azure_ai_search` tool bypasses the KB entirely. The agent receives raw search documents, the LLM sees the `url` field, and Foundry renders it as a native `url_citation` annotation pointing to the real document.
+1. **Per-user ACL push-down.** The `azure_ai_search` tool accepts a `filter` parameter, so an app layer running OBO can push `search.ismatch('<user-oid>','acl_user_ids')` into every query — see [Pattern A in §14.5](#145-how-the-foundry-agent-knows-about-permissions--spoiler-it-doesnt-not-by-itself). KB MCP currently has no equivalent — the planner builds its own queries and you cannot inject a per-request filter at the agent boundary.
+2. **Cost + latency.** A single hybrid query is cheaper and faster than planner + N subqueries. For most well-formed user questions, semantic ranking on a single query already produces excellent results.
 
-#### Bonus: enables per-user ACL filtering
+#### When to switch to / add the Knowledge Base agent
 
-The `azure_ai_search` tool also unlocks [Pattern A from §14.5](#145-how-the-foundry-agent-knows-about-permissions--spoiler-it-doesnt-not-by-itself) — per-user access control via a `filter` clause like `search.ismatch('<user-oid>','acl_user_ids')`. With a Knowledge Source this is not possible at all.
+- **Multi-part comparative questions** — "*compare the Q3 procurement policy to the Q4 update and tell me which legal entities are affected*". Subquery decomposition genuinely improves recall here.
+- **You don't need per-user ACL filtering** — e.g. internal docs that everyone in the project is allowed to see; the security boundary is the index itself.
+- **You're happy to pay for the planner model** — `gpt-4.1` planner runs on every turn, in addition to the answer model.
 
-#### When you would go back to Knowledge Source
+The script supports both at once. Keep the primary `azure_ai_search` agent as your default, set `USE_AGENTIC_RETRIEVAL=true` to also create `sharepoint-agentic`, and let users pick the right tool for the question in the Playground.
 
-- **Multi-source RAG** — blend SharePoint + Confluence + web search and let Foundry orchestrate across them
-- **You do not care about citation URLs** — e.g. internal-only bot where users do not click through to sources
-- **You want Foundry to handle query reformulation and answer synthesis automatically**
+#### 14.7.1 Opt-in: Agentic Retrieval (Knowledge Base via MCP) side-by-side
 
-For the SharePoint use case (citations must link back to the original documents), `azure_ai_search` is objectively the right choice.
+
+The deploy script can **also** provision a second agent that uses [AI Search agentic retrieval](https://learn.microsoft.com/en-us/azure/search/search-agentic-retrieval-overview) — without replacing the primary `azure_ai_search` agent. Both agents live in the same Foundry project so you can A/B compare them in the Playground.
+
+Agentic retrieval differs from the `azure_ai_search` tool in how the query is constructed:
+
+```
+azure_ai_search tool           Agentic retrieval (Knowledge Base)
+──────────────────             ──────────────────────────────────
+ 1 user question       ──▶      1 user question
+ 1 AI Search query                      │
+ top K chunks                           ▼
+                                planner LLM (gpt-4.1) decomposes into
+                                N subqueries
+                                        │
+                                        ▼
+                                fan-out N AI Search queries
+                                (each with its own semantic rerank)
+                                        │
+                                        ▼
+                                merged + deduplicated references
+```
+
+For multi-part questions (*"which policy covers X, and how does it compare to Y?"*) the planner usually pulls back more relevant passages at the cost of extra latency and token spend on the planner model.
+
+Enable it with:
+
+```bash
+# in sharepoint-sync.env
+USE_AGENTIC_RETRIEVAL=true
+# optional — defaults shown
+# AGENTIC_PLANNER_MODEL=gpt-4.1
+# AGENTIC_REASONING_EFFORT=low      # minimal | low | medium
+# AGENTIC_OUTPUT_MODE=extractiveData # extractiveData | answerSynthesis
+```
+
+Re-running `./3-deploy-sharepoint-sync.sh` creates:
+
+- **Knowledge Source** `sharepoint-ks` — a wrapper over `sharepoint-index`
+- **Knowledge Base** `sharepoint-kb` — the agentic retrieval endpoint (planner model + reasoning effort)
+- **Project connection** `sharepoint-kb-mcp` — RemoteTool wiring Foundry to the KB MCP endpoint
+- **Foundry agent** `sharepoint-agentic` — a second agent that uses the MCP tool
+
+The primary agent (`${FOUNDRY_AGENT_NAME}`) is untouched. Pick the one you prefer in the Playground, or flip the flag back to `false` to stop creating the agentic agent (existing resources are left in place until you delete them manually).
 
 ### 14.8 Prerequisites
 
@@ -1633,7 +1682,119 @@ Notice how DNS zones are spread across **two resource groups** (`foundry-private
      - *.sharepoint.com
 ```
 
+### 14.10.1 RAG Tuning (optional — sensible defaults for every knob)
+
+Chunking, vector index, indexer, and agent behaviour are all env-configurable. Every knob has a documented default, so the out-of-the-box deploy is ready to use. Changing any value in this section and re-running the deploy script triggers a full rebuild of the affected AI Search artifacts — Step 11 deletes + recreates the index / skillset / indexer every run by design, and the next indexer run re-materializes the data.
+
+> 📚 **Want to deeply understand the RAG knobs below before tuning them?** See the companion [RAG Workshop](https://github.com/roie9876/RAG-WorkShop) — hands-on labs that walk through chunking strategies, embedding models, vector indexes (HNSW vs IVF vs flat), semantic ranking, hybrid search, and evaluation. Every parameter in the table below is exercised end-to-end with measurable quality + latency comparisons.
+
+#### Reference table
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `CHUNK_SPLIT_MODE` | `pages` | `pages` or `sentences` (SplitSkill `textSplitMode`) |
+| `CHUNK_UNIT` | `characters` | `characters` or `azureOpenAITokens` |
+| `CHUNK_SIZE` | `2000` | Max chunk length in the chosen unit |
+| `CHUNK_OVERLAP` | `200` | Overlap between consecutive chunks |
+| `VECTOR_METRIC` | `cosine` | HNSW distance metric (`cosine` / `euclidean` / `dotProduct`) |
+| `HNSW_M` | `4` | Neighbors per node (4..10). Higher = better recall, larger index |
+| `HNSW_EF_CONSTRUCTION` | `400` | Build-time quality (100..1000) |
+| `HNSW_EF_SEARCH` | `500` | Query-time quality (100..1000) |
+| `SEMANTIC_CONFIG_ENABLED` | `true` | Index-level semantic ranker (free quality bump) |
+| `INDEXER_SCHEDULE_INTERVAL` | `PT1H` | ISO-8601 duration (`PT15M`, `PT1H`, `P1D`…) |
+| `INDEXER_MAX_FAILED_ITEMS` | `-1` | `-1` = unlimited |
+| `INDEXER_MAX_FAILED_PER_BATCH` | `-1` | `-1` = unlimited |
+| `AGENT_QUERY_TYPE` | `semantic` | Primary agent's AI Search query mode — see below |
+
+#### Chunking — `CHUNK_*`
+
+A "chunk" is the unit of text the indexer hands to the embedding model and stores as one document in the index. The embedding model has a token-window limit (~8K tokens for `text-embedding-3-*`), and the LLM has a context-window cost per retrieved chunk. Chunking decisions trade off **recall**, **precision**, **latency**, and **cost**:
+
+- `CHUNK_SPLIT_MODE`
+  - `pages` — split on natural page-like boundaries (paragraphs, headings). Best for prose, contracts, manuals.
+  - `sentences` — split on sentence boundaries. Use for highly structured Q&A or FAQ-style content where a single sentence is a complete answer.
+- `CHUNK_UNIT`
+  - `characters` — fast, deterministic, no tokenizer dependency. The default; works well for English / Latin text.
+  - `azureOpenAITokens` — counted against the embedding model's tokenizer. Slightly more accurate budgeting for non-Latin scripts (Hebrew, Arabic, CJK) where char-to-token ratios vary.
+- `CHUNK_SIZE` — bigger chunks = fewer documents, more context per hit, but coarser retrieval (the relevant 50 words drown in 2000). Smaller chunks = sharper retrieval, but the LLM may need to stitch many of them. Common sweet spot: **800–2000 chars** or **256–512 tokens**.
+- `CHUNK_OVERLAP` — duplicates the last N chars/tokens at the start of the next chunk so a sentence cut in half still appears intact in at least one chunk. Rule of thumb: **10–20% of `CHUNK_SIZE`**.
+
+> Re-chunking is destructive — re-running the deploy DELETEs the index and the next indexer run re-materializes everything. Plan for the full re-index time (depends on document count + embedding throughput).
+
+#### Vector index — `VECTOR_METRIC` + `HNSW_*`
+
+The index uses [HNSW](https://learn.microsoft.com/en-us/azure/search/vector-search-ranking#hnsw) (Hierarchical Navigable Small World) — a graph-based approximate nearest-neighbour index. Knobs control the recall ↔ size ↔ latency triangle:
+
+- `VECTOR_METRIC` — must match the embedding model. Azure OpenAI `text-embedding-3-*` and `ada-002` produce vectors trained for `cosine` similarity. Only switch to `dotProduct` / `euclidean` if you bring your own embedding model trained for a different metric.
+- `HNSW_M` — number of bi-directional links per node in the graph. Higher M = denser graph = better recall + more RAM + larger index. Range 4–10 is normal; 4 is sufficient for most workloads up to a few million chunks.
+- `HNSW_EF_CONSTRUCTION` — the breadth of the neighbour search **at build time**. Higher = slower index build but a higher-quality graph (better recall ceiling at query time). Range 100–1000.
+- `HNSW_EF_SEARCH` — the breadth of the neighbour search **at query time**. Higher = better recall, more latency. Tune this independently from `EF_CONSTRUCTION` once the index is built — it's a runtime knob.
+
+A common pattern: keep `M=4` and `EF_CONSTRUCTION=400`, then experiment with `EF_SEARCH` (try 100, 500, 1000) and pick the lowest value that hits your recall target.
+
+#### Semantic ranker — `SEMANTIC_CONFIG_ENABLED`
+
+When enabled, AI Search adds a [semantic L2 reranker](https://learn.microsoft.com/en-us/azure/search/semantic-search-overview) on top of keyword/vector results. It uses a cross-encoder model (free with the Search SKU) to re-score the top ~50 results by *semantic relevance* rather than lexical match. Almost always a quality win for natural-language questions over English/multilingual prose. Disabling it forces `AGENT_QUERY_TYPE` away from `semantic` and `vectorSemanticHybrid` (the deploy script enforces this).
+
+#### Indexer — `INDEXER_*`
+
+- `INDEXER_SCHEDULE_INTERVAL` — how often the AI Search indexer scans Blob for changes and re-indexes. The Function App's own `TIMER_SCHEDULE` controls SharePoint → Blob; this controls Blob → Index. Worst-case end-to-end latency = `TIMER_SCHEDULE` + `INDEXER_SCHEDULE_INTERVAL`. Set both to `PT15M` for near-real-time, or stretch to `P1D` for batch workloads.
+- `INDEXER_MAX_FAILED_ITEMS` / `INDEXER_MAX_FAILED_PER_BATCH` — `-1` means "never abort a run because of bad documents" (a single broken PDF won't stop the indexer). Set to a positive number if you want the indexer to fail loud after N skipped docs.
+
+#### `AGENT_QUERY_TYPE` — how the primary Foundry agent queries the index
+
+| Value | Uses keyword | Uses vector | Uses semantic reranker | Notes |
+|---|:-:|:-:|:-:|---|
+| `simple` | ✅ | | | Fastest, no vector recall — keyword-only BM25 |
+| `semantic` *(default)* | ✅ | | ✅ | Recommended — keyword + L2 reranker |
+| `vector` | | ✅ | | Pure vector similarity — best for paraphrases / multilingual |
+| `vectorSemanticHybrid` | ✅ | ✅ | ✅ | Best quality, highest latency + token cost |
+
+`semantic` and `vectorSemanticHybrid` require `SEMANTIC_CONFIG_ENABLED=true`. The script populates `vectorFields=["text_vector"]` automatically when you choose a `vector*` mode and adds the `semantic_configuration` reference when you choose a `semantic*` mode — so you only need to set `AGENT_QUERY_TYPE` and re-deploy.
+
+### 14.10.2 Agentic Retrieval (opt-in, coexists with the primary agent)
+
+Set `USE_AGENTIC_RETRIEVAL=true` to have Step 14b of the deploy script provision a second Foundry agent that uses [AI Search agentic retrieval](https://learn.microsoft.com/en-us/azure/search/search-agentic-retrieval-overview) — see [§14.7.1](#1471-opt-in-agentic-retrieval-knowledge-base-via-mcp-side-by-side). The primary agent is never modified, so you can A/B compare both in the Playground.
+
+#### Reference table
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `USE_AGENTIC_RETRIEVAL` | `false` | Master switch for Step 14b |
+| `AGENTIC_KS_NAME` | `sharepoint-ks` | Knowledge Source name (wrapper over the index) |
+| `AGENTIC_KB_NAME` | `sharepoint-kb` | Knowledge Base name (the agentic retrieval endpoint) |
+| `AGENTIC_AGENT_NAME` | `sharepoint-agentic` | Second Foundry agent name |
+| `AGENTIC_PROJECT_CONN_NAME` | `sharepoint-kb-mcp` | Project connection (RemoteTool → KB MCP) |
+| `AGENTIC_PLANNER_MODEL` | `${FOUNDRY_AGENT_MODEL}` | Planner model deployment (typically `gpt-4.1`) |
+| `AGENTIC_REASONING_EFFORT` | `low` | `minimal` / `low` / `medium` — more effort = more subqueries |
+| `AGENTIC_OUTPUT_MODE` | `extractiveData` | `extractiveData` (ranked passages) or `answerSynthesis` (synthesized answer) |
+| `AGENTIC_AGENT_INSTRUCTIONS` | *built-in default* | Override the MCP agent's system prompt |
+
+#### What each knob actually does
+
+- **`USE_AGENTIC_RETRIEVAL`** — when `true`, Step 14b creates the KS, KB, project connection, RBAC, and the second agent. Flipping back to `false` does NOT delete what was already created — it simply stops new versions from being pushed.
+- **`AGENTIC_KS_NAME`** — the [Knowledge Source](https://learn.microsoft.com/en-us/azure/search/search-knowledge-source-how-to) is a thin wrapper around `sharepoint-index` that tells the KB which fields to surface (`title`, `chunk`, `url`). Renaming it lets you run multiple KSs over the same index (e.g. one per language slice).
+- **`AGENTIC_KB_NAME`** — the [Knowledge Base](https://learn.microsoft.com/en-us/azure/search/search-knowledge-base-how-to) is the actual agentic retrieval endpoint. It exposes a `/retrieve` REST API and an MCP endpoint at `/knowledgebases/{name}/mcp`. The MCP endpoint is what Foundry's MCPTool talks to.
+- **`AGENTIC_PROJECT_CONN_NAME`** — name of the Foundry project connection that wires Foundry → KB MCP. Created with `authType=ProjectManagedIdentity` and `audience=https://search.azure.com/` so the project's MI can authenticate against AI Search.
+- **`AGENTIC_PLANNER_MODEL`** — the LLM that **decomposes** the user question into multiple subqueries and reformulates them. Defaults to whatever model the primary agent uses (`gpt-4.1` is common). The planner runs **once per agent turn**, then fans out N parallel AI Search queries. Each subquery still uses the index's vector + semantic config — the planner just controls *what* questions are asked.
+- **`AGENTIC_REASONING_EFFORT`** — bounds how many subqueries the planner can issue:
+  - `minimal` — usually 1–2 subqueries. Closest behaviour to the plain `azure_ai_search` tool.
+  - `low` — 2–4 subqueries. Good balance for most multi-part questions.
+  - `medium` — 4–8 subqueries. Best for complex / comparative questions; noticeable extra latency + planner token cost.
+- **`AGENTIC_OUTPUT_MODE`**:
+  - `extractiveData` *(default)* — KB returns ranked passages with `references[].sourceData.{title,url,chunk}`. The Foundry agent then writes the prose answer + citations itself. Best for transparency and control over output formatting.
+  - `answerSynthesis` — KB internally synthesizes an answer string (still using its planner model) and returns that. The Foundry agent mostly relays the result. Faster end-to-end if you trust the KB's prose, but you lose control over wording / language / citation format.
+- **`AGENTIC_AGENT_INSTRUCTIONS`** — system prompt for the agentic agent. Default uses the same bare-URL citation protocol as the primary agent (see [§14.7](#147-azure_ai_search-tool-vs-knowledge-source--why-we-picked-the-tool)) to keep SharePoint URLs clickable in the Playground.
+
+> 📚 **Want to understand agentic retrieval, planning, and subquery decomposition in depth?** The [RAG Workshop](https://github.com/roie9876/RAG-WorkShop) walks through query planning, hybrid retrieval, evaluation harnesses, and when to reach for agentic retrieval vs a single hybrid query.
+
+#### What gets created when enabled
+
+The script also assigns the necessary RBAC: Search MI → `Cognitive Services User` on AI Services (so the KB can call the planner LLM); Project MI → `Search Index Data Reader` + `Search Service Contributor` on Search (so the agent can query the KB). All four resource creations (KS, KB, connection, agent version) are idempotent — safe to re-run.
+
 ### 14.11 What It Deploys
+
+**Always created:**
 
 | Resource | Purpose | Network |
 |----------|---------|---------|
@@ -1642,11 +1803,23 @@ Notice how DNS zones are spread across **two resource groups** (`foundry-private
 | Function Storage Account | Function App internal storage | Private (blob + file PEs) |
 | Key Vault | Stores SPN secrets + AI Search key | Private (PE), RBAC-enabled |
 | Blob Container (`sharepoint-sync`) | Synced SharePoint files with metadata | In existing Foundry storage |
-| AI Search Index | `sharepoint-index` with permission fields | Existing AI Search service |
+| AI Search Index | `sharepoint-index` with permission fields (HNSW + semantic config) | Existing AI Search service |
+| AI Search Skillset | OCR → merge → split → Azure OpenAI embeddings | Existing AI Search service |
 | AI Search Indexer | Hourly, private execution environment | Via Shared Private Link |
 | Shared Private Link | AI Search → Storage (blob) | Managed PE from Search |
 | Firewall Rule | `AllowSharePointSync` | `*.sharepoint.com`, `graph.microsoft.com` |
-| Foundry Agent | `azure_ai_search` tool → `sharepoint-index` | Internal (AI Services) |
+| Foundry Agent (primary) | `${FOUNDRY_AGENT_NAME}` — `azure_ai_search` tool → `sharepoint-index` | Internal (AI Services) |
+
+**Conditionally created when `USE_AGENTIC_RETRIEVAL=true`** (Step 14b — see [§14.10.2](#1410-2-agentic-retrieval-opt-in-coexists-with-the-primary-agent)):
+
+| Resource | Purpose | Network |
+|----------|---------|---------|
+| Knowledge Source | `sharepoint-ks` — wraps `sharepoint-index`, declares `sourceDataFields` (`title`, `chunk`, `url`) | Existing AI Search service |
+| Knowledge Base | `sharepoint-kb` — agentic retrieval endpoint (planner model + reasoning effort) | Existing AI Search service |
+| Project connection | `sharepoint-kb-mcp` — RemoteTool wiring Foundry → KB MCP endpoint, `audience=https://search.azure.com/`, `authType=ProjectManagedIdentity` | Foundry project |
+| Foundry Agent (secondary) | `sharepoint-agentic` — second agent that uses the KB MCP tool | Internal (AI Services) |
+| RBAC: Search MI | `Cognitive Services User` on AI Services (so KB can call planner LLM) | — |
+| RBAC: Project MI | `Search Index Data Reader` + `Search Service Contributor` on Search | — |
 
 ### 14.12 How Secrets Are Handled
 
@@ -1681,7 +1854,9 @@ The Function App's managed identity has `Key Vault Secrets User` role — it can
    az search service update --name <search-name> -g <rg> --public-access disabled
    ```
 
-4. **Agent is configured automatically** — Step 14 of the deploy script creates a Foundry agent with the `azure_ai_search` tool wired to `sharepoint-index`. Citation URLs in agent responses link directly to the SharePoint documents.
+4. **Primary agent is configured automatically** — Step 14 of the deploy script creates `${FOUNDRY_AGENT_NAME}` with the `azure_ai_search` tool wired to `sharepoint-index`. Citation URLs in agent responses link directly to the SharePoint documents.
+
+5. **(Optional) Agentic retrieval agent** — if `USE_AGENTIC_RETRIEVAL=true`, Step 14b also creates `sharepoint-agentic` (Knowledge Base via MCP). Open both agents in the Foundry Playground and A/B compare them on your real questions. See [§14.7.1](#1471-opt-in-agentic-retrieval-knowledge-base-via-mcp-side-by-side) and [§14.10.2](#1410-2-agentic-retrieval-opt-in-coexists-with-the-primary-agent).
 
 ### 14.14 Troubleshooting
 
@@ -1691,6 +1866,11 @@ The Function App's managed identity has `Key Vault Secrets User` role — it can
 | Indexer fails: "Unable to retrieve blob container" | SPL not approved or MI missing RBAC | Approve SPL on Storage → Networking. Grant AI Search MI `Storage Blob Data Reader` on Storage |
 | Key Vault secret resolution fails (Function 500s) | KV PE not registered in DNS, or RBAC delay | Check DNS zone link. Wait 5 min for RBAC propagation |
 | Indexer status shows `transientFailure` | Not using private execution environment | Set `"executionEnvironment": "private"` on the indexer |
+| Full-reconcile run returns `404` on a SharePoint folder | Folder was renamed or removed in SharePoint between sync runs | Function now skips missing folders and continues — check Function logs to confirm the skip is logged. If runs still fail, set `PERMISSIONS_DELTA_MODE=graph_delta` to avoid full-list scans |
+| Agent answers show `doc_0 / doc_1` pills instead of clickable SharePoint URLs | Agent's system prompt is vague (`"cite using references"`) — Foundry's Playground auto-numbers references unless the model text prints bare URLs | Re-run deploy after pulling the latest script — both `${FOUNDRY_AGENT_NAME}` (v15+) and `sharepoint-agentic` (v2+) ship with the bare-URL citation protocol baked into their default instructions. Or set `${FOUNDRY_AGENT_NAME^^}_INSTRUCTIONS` / `AGENTIC_AGENT_INSTRUCTIONS` to override |
+| `sharepoint-agentic` returns no references | KB planner can't reach AI Services / Search, OR project MI lacks `Search Index Data Reader` | Wait 5–10 min for RBAC propagation after first deploy. Smoke test the KB directly: `curl -X POST ".../knowledgebases/sharepoint-kb/retrieve?api-version=2025-11-01-preview"` from a jumpbox |
+| Step 14b fails creating the project connection (`sharepoint-kb-mcp`) | Connection already exists with conflicting `audience` / `authType` | Delete the connection in Foundry portal → Project Settings → Connections, then re-run the deploy. The script recreates it idempotently |
+| `USE_AGENTIC_RETRIEVAL=false` after a previous `true` deploy — KS / KB / agent linger | By design — flipping the flag back stops new versions from being pushed but does NOT delete what was created | Delete manually: `az rest -m DELETE` against the KB / KS, then delete `sharepoint-agentic` and `sharepoint-kb-mcp` in the Foundry portal |
 
 ---
 
