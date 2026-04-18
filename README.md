@@ -1941,10 +1941,11 @@ Function App Setting                 → Key Vault Secret
 AZURE_TENANT_ID                      → @Microsoft.KeyVault(SecretUri=.../sp-tenant-id)
 AZURE_CLIENT_ID                      → @Microsoft.KeyVault(SecretUri=.../sp-client-id)
 AZURE_CLIENT_SECRET                  → @Microsoft.KeyVault(SecretUri=.../sp-client-secret)
-SEARCH_API_KEY                       → @Microsoft.KeyVault(SecretUri=.../search-api-key)
 ```
 
 The Function App's managed identity has `Key Vault Secrets User` role — it can read secrets but not modify them.
+
+**Everything else is managed identity** — the Function talks to Blob, the Function storage account, and Key Vault using its system-assigned managed identity. It never calls Azure AI Search at runtime (the indexer pulls from Blob server-side via Shared Private Link), so no Search key is surfaced to the app.
 
 ### 14.13 Post-Deployment Steps
 

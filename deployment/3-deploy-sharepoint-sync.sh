@@ -744,19 +744,22 @@ az keyvault secret set --vault-name "$KV_NAME" --name "sp-tenant-id" --value "$S
 az keyvault secret set --vault-name "$KV_NAME" --name "sp-client-id" --value "$SP_CLIENT_ID" --output none
 az keyvault secret set --vault-name "$KV_NAME" --name "sp-client-secret" --value "$SP_CLIENT_SECRET" --output none
 
+# Search admin key is used ONLY at deploy time (by this script, locally) to
+# create/manage index/skillset/indexer artifacts. The Function App itself
+# does not call AI Search at runtime — the indexer pulls from Blob via
+# Shared Private Link. So we fetch the key into a local var but do NOT
+# store it in Key Vault and do NOT surface it as a Function App setting.
 SEARCH_KEY=$(az search admin-key show \
   --service-name "$AI_SEARCH_NAME" \
   --resource-group "$SPOKE_RG" \
   --query primaryKey -o tsv)
-az keyvault secret set --vault-name "$KV_NAME" --name "search-api-key" --value "$SEARCH_KEY" --output none
 
 # Get secret URIs for KV references
 SP_TENANT_ID_URI=$(az keyvault secret show --vault-name "$KV_NAME" --name "sp-tenant-id" --query id -o tsv)
 SP_CLIENT_ID_URI=$(az keyvault secret show --vault-name "$KV_NAME" --name "sp-client-id" --query id -o tsv)
 SP_CLIENT_SECRET_URI=$(az keyvault secret show --vault-name "$KV_NAME" --name "sp-client-secret" --query id -o tsv)
-SEARCH_KEY_URI=$(az keyvault secret show --vault-name "$KV_NAME" --name "search-api-key" --query id -o tsv)
 
-echo "  ✅ Secrets stored: sp-tenant-id, sp-client-id, sp-client-secret, search-api-key"
+echo "  ✅ Secrets stored: sp-tenant-id, sp-client-id, sp-client-secret"
 
 # Lock down KV: PE + disable public access
 az network private-endpoint create \
@@ -811,7 +814,6 @@ az functionapp config appsettings set \
     "SYNC_PURVIEW_PROTECTION=${SYNC_PURVIEW_PROTECTION:-false}" \
     "SEARCH_SERVICE_NAME=$AI_SEARCH_NAME" \
     "SEARCH_RESOURCE_GROUP=$SPOKE_RG" \
-    "SEARCH_API_KEY=@Microsoft.KeyVault(SecretUri=${SEARCH_KEY_URI})" \
     "API_VERSION=${API_VERSION:-2025-11-01}" \
     "INDEX_NAME=${INDEX_NAME:-sharepoint-index}" \
     "INDEXER_NAME=${INDEXER_NAME:-sharepoint-blob-indexer}" \
