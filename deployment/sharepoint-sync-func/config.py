@@ -31,6 +31,7 @@ class Config:
     
     # Sync settings
     delete_orphaned_blobs: bool  # Delete blobs that no longer exist in SharePoint
+    soft_delete_orphaned_blobs: bool  # If True, mark orphans with IsDeleted=true metadata instead of permanent DELETE (lets the AI Search soft-delete column policy clean up index chunks safely)
     dry_run: bool  # If True, only log what would be done without making changes
     
     # Permissions delta detection mode
@@ -97,6 +98,7 @@ class Config:
             
             # Sync settings
             delete_orphaned_blobs=os.environ.get("DELETE_ORPHANED_BLOBS", "false").lower() == "true",
+            soft_delete_orphaned_blobs=os.environ.get("SOFT_DELETE_ORPHANED_BLOBS", "true").lower() == "true",
             dry_run=os.environ.get("DRY_RUN", "false").lower() == "true",
             
             # Permissions delta mode
