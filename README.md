@@ -49,6 +49,7 @@
   - [14.7 `azure_ai_search` Tool vs. Knowledge Source](#147-azure_ai_search-tool-vs-knowledge-source--why-we-picked-the-tool)
   - [14.8 Prerequisites](#148-prerequisites)
   - [14.9 Deploy the SharePoint Sync Layer](#149-deploy-the-sharepoint-sync-layer)
+  - [14.9.1 `sharepoint-sync.env` — Parameter Reference](#1491-sharepoint-syncenv--parameter-reference)
   - [14.10 Customer-Environment Configuration](#1410-customer-environment-configuration-optional-overrides)
   - [14.11 What It Deploys](#1411-what-it-deploys)
   - [14.12 How Secrets Are Handled](#1412-how-secrets-are-handled)
@@ -1638,6 +1639,115 @@ cd deployment
 cp sharepoint-sync.env.example sharepoint-sync.env   # Fill in your values
 ./3-deploy-sharepoint-sync.sh
 ```
+
+### 14.9.1 `sharepoint-sync.env` — Parameter Reference
+
+This is every required and optional setting in `sharepoint-sync.env.example`. The file is grouped into logical blocks; this table mirrors that order. Optional overrides for advanced scenarios (DNS in another sub, 3rd-party firewall, AI Search behind deny-policy) are documented separately in [§14.10](#1410-customer-environment-configuration-optional-overrides). RAG tuning knobs are documented in [§14.10.1](#14101-rag-tuning-optional--sensible-defaults-for-every-knob). Agentic retrieval knobs in [§14.10.2](#14102-agentic-retrieval-opt-in-coexists-with-the-primary-agent).
+
+> **🔐 Sensitive file** — `sharepoint-sync.env` is gitignored. Never commit it. The deploy script writes secrets (`AZURE_CLIENT_SECRET`, AI Search admin key) into Key Vault and the Function App reads them via `@Microsoft.KeyVault(...)` references at runtime.
+
+#### Azure subscription / networking
+
+| Variable | Required | Example | Purpose |
+|---|---|---|---|
+| `SUBSCRIPTION_ID` | ✅ | `f81e…b710` | Subscription where the Function App, Key Vault, Function Storage, and (existing) AI Services / AI Search / Storage live. The deploy script runs `az account set --subscription` to this value. |
+| `LOCATION` | ✅ | `swedencentral` | Azure region for the Function App, plan, Key Vault, and Function Storage. **Must match the spoke VNet region** — Flex Consumption requires VNet integration in the same region. |
+| `SPOKE_RG` | ✅ | `foundry-spoke-rg` | Resource group of the spoke VNet **and** where all sync-layer resources are created. Must match `SPOKE_RG` from `spoke.env` (Step 2). |
+| `SPOKE_VNET_NAME` | ✅ | `spoke-vnet` | Name of the spoke VNet to attach the Function App to. The script creates a new `func-subnet` inside this VNet. |
+| `HUB_RG` | ✅ when `FW_MODE=azure` | `foundry-hub-rg` | Resource group of the Azure Firewall + policy. Set to **blank** when `FW_MODE=external` (3rd-party NVA). |
+| `FW_PRIVATE_IP` | ✅ | `10.0.1.4` | Private IP of the Azure Firewall (or 3rd-party NVA). Used to build the User-Defined Route on `func-subnet` so all egress (Graph API, SharePoint) traverses the firewall. |
+| `FUNC_SUBNET_PREFIX` | ✅ | `10.230.4.0/24` | CIDR for the Function App's dedicated subnet. **Must be unused** in the spoke VNet. The script creates the subnet, delegates it to `Microsoft.App/environments` (Flex requirement), and attaches a UDR routing `0.0.0.0/0` → `FW_PRIVATE_IP`. |
+| `SPOKE_ADDRESS_SPACE` | ✅ | `10.230.0.0/16` | Source CIDR used in the Azure Firewall application-rule collection (so only this VNet's traffic is matched). |
+
+#### Authentication — App Registration / SPN
+
+The Function App authenticates to Microsoft Graph as an Entra App Registration (service principal). It needs **`Sites.Read.All`** + **`Files.Read.All`** application permissions (admin-consented), or the more granular **`Sites.Selected`** model.
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `AZURE_CLIENT_ID` | ✅ | App Registration (client) ID. Stored in Key Vault as `sp-client-id`. |
+| `AZURE_CLIENT_SECRET` | ✅ | App Registration client secret value. Stored in Key Vault as `sp-client-secret`. **Use a long-lived secret or migrate to certificate auth for production.** |
+| `AZURE_TENANT_ID` | ✅ | Entra tenant where both the App Registration and SharePoint Online live. Stored as `sp-tenant-id`. |
+
+#### SharePoint configuration
+
+| Variable | Required | Example | Purpose |
+|---|---|---|---|
+| `SHAREPOINT_SITE_URL` | ✅ | `https://contoso.sharepoint.com/sites/MySite` | Full URL of the SharePoint **site** (not the tenant root). The Function resolves this to a Graph site ID at runtime. |
+| `SHAREPOINT_DRIVE_NAME` | ✅ | `Shared Documents` | The document library to sync. `Shared Documents` is the default library on every site; for custom libraries use the display name. |
+| `SHAREPOINT_FOLDER_PATH` | ✅ | `/IEC,/Malan,/HR` | Comma-separated list of folder paths inside the drive. Use `/` to sync the whole drive root. **Watch the comma carefully** — a typo like `/IEC,/Malan/HR` becomes 2 paths instead of 3 and any blob outside scope is treated as orphan. (See `SOFT_DELETE_ORPHANED_BLOBS` for why this is no longer catastrophic.) |
+| `SHAREPOINT_INCLUDE_EXTENSIONS` | optional | `.pdf,.docx,.pptx` | Comma-separated allow-list of file extensions (case-insensitive). When set, **only** matching files sync. Accepts `.pdf`, `pdf`, or `*.pdf`. |
+| `SHAREPOINT_EXCLUDE_EXTENSIONS` | optional | `*.zip,*.exe,*.tmp` | Block-list of extensions. Always applied; combine with INCLUDE for fine control. |
+
+#### Azure Blob Storage (existing — from Foundry deployment)
+
+| Variable | Required | Example | Purpose |
+|---|---|---|---|
+| `AZURE_STORAGE_ACCOUNT_NAME` | ✅ | `aiservicesrzgnstorage` | Existing Foundry storage account. The script creates the `sharepoint-sync` container here and adds an AI Search Shared Private Link to it. |
+| `AZURE_BLOB_CONTAINER_NAME` | ✅ | `sharepoint-sync` | Target container for synced files. Created by the script if missing. |
+| `AZURE_BLOB_PREFIX` | optional | (blank) | Optional path prefix prepended to every blob (e.g. `tenant1/`). Leave blank to mirror SharePoint paths verbatim. |
+
+#### Sync behaviour
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DELETE_ORPHANED_BLOBS` | `true` | When `true`, blobs with no matching SharePoint source are removed (subject to `SOFT_DELETE_ORPHANED_BLOBS` below). When `false`, orphans accumulate indefinitely. |
+| `SOFT_DELETE_ORPHANED_BLOBS` | `true` | When `true`, "deletion" sets blob metadata `IsDeleted=true` instead of issuing a permanent HTTP DELETE. The AI Search indexer's `softDeleteColumnDeletionDetectionPolicy` then evicts the chunks on its next run. **Why this matters:** misconfigurations (e.g. wrong `SHAREPOINT_FOLDER_PATH`) become recoverable — re-fix the value, re-sync, and `upload_blob(overwrite=True)` clears the marker. With hard delete (`false`), the same mistake permanently destroys data and leaves stale "ghost" chunks in the index. |
+| `DRY_RUN` | `false` | Set `true` to log every action without touching Blob or the index. Useful for validating a folder-path change before running it for real. |
+| `SYNC_PERMISSIONS` | `true` | When `true`, the function reads SharePoint item permissions via Graph and writes `acl_user_ids` / `acl_group_ids` to blob metadata. The index projects these into searchable fields so the agent can do trimming. See [§14.4](#144-what-ends-up-in-the-index--schema--acl-model). |
+| `PERMISSIONS_DELTA_MODE` | `hash` | `hash` = SHA256 the permission set and re-sync only when it changes (simpler, robust). `graph_delta` = use Graph delta tokens (more efficient on huge sites, slightly more state). |
+| `SYNC_PURVIEW_PROTECTION` | `false` | When `true`, also reads Microsoft Purview sensitivity labels and stores them as metadata. Requires Purview connected to your tenant. |
+
+#### Sync schedules (NCRONTAB, 6-field — `second minute hour day month day-of-week`)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `TIMER_SCHEDULE` | `"0 0 * * * *"` (hourly) | **Delta sync** — fast/incremental. Picks up files changed since the last run via Graph delta tokens. Cheap; safe to run every 5–15 min. |
+| `TIMER_SCHEDULE_FULL` | `"0 0 3 * * *"` (daily 03:00 UTC) | **Full reconcile** — lists every in-scope file, re-uploads what's missing, and processes orphans (renames/moves that delta can't see). More expensive; once a day is usually enough. |
+
+Common patterns: `0 */5 * * * *` (every 5 min), `0 */30 * * * *` (every 30 min), `0 0 */6 * * *` (every 6 h), `0 0 2 * * 0` (Sundays 02:00 UTC).
+
+#### Azure AI Search (existing — from Foundry deployment)
+
+| Variable | Required | Default | Purpose |
+|---|---|---|---|
+| `SEARCH_SERVICE_NAME` | ✅ | — | Existing AI Search service name (no `.search.windows.net`). |
+| `SEARCH_RESOURCE_GROUP` | ✅ | — | RG of the AI Search service. Often equals `SPOKE_RG`. |
+| `API_VERSION` | optional | `2025-11-01` | AI Search REST API version used by Step 11 to create index/skillset/indexer/datasource. Bump only if you need a newer feature. |
+| `INDEX_NAME` | optional | `sharepoint-index` | Name of the index created by the script. |
+| `INDEXER_NAME` | optional | `sharepoint-blob-indexer` | Name of the indexer (Blob → vectorized chunks). |
+| `SKILLSET_NAME` | optional | `sharepoint-sync-skillset` | Skillset used by the indexer (split → embed → projections). |
+| `DATASOURCE_NAME` | optional | `sharepoint-blob-ds` | Datasource pointing to the `sharepoint-sync` container, configured with the soft-delete policy on `IsDeleted`. |
+
+#### Azure OpenAI (for embeddings inside the skillset)
+
+| Variable | Required | Example | Purpose |
+|---|---|---|---|
+| `OPENAI_RESOURCE_URI` | ✅ | `https://aiservicesrzgn.cognitiveservices.azure.com/` | Endpoint of the AI Services / Azure OpenAI account that hosts the embedding deployment. The skillset's `AzureOpenAIEmbeddingSkill` calls this. |
+| `EMBEDDING_DEPLOYMENT_ID` | ✅ | `text-embedding-3-small` | Deployment name in the AI Services account. |
+| `EMBEDDING_MODEL_NAME` | ✅ | `text-embedding-3-small` | Model name (used by AI Search to route the request). |
+| `EMBEDDING_DIMENSIONS` | ✅ | `1536` | Vector dimensionality. **Must match the model**: `text-embedding-3-small` = 1536, `text-embedding-3-large` = 3072, `text-embedding-ada-002` = 1536. |
+
+#### Foundry Agent (Step 14)
+
+| Variable | Required | Example | Purpose |
+|---|---|---|---|
+| `AI_SERVICES_NAME` | ✅ | `aiservicesrzgn` | AI Services account that hosts the Foundry project. The agent API endpoint is `https://<name>.services.ai.azure.com/api/projects/<project>`. |
+| `FOUNDRY_PROJECT_NAME` | ✅ | `projectrzgn` | Project under the AI Services account. |
+| `FOUNDRY_AGENT_NAME` | ✅ | `sharepoint-search-agent` | Display name of the primary agent. The script creates a new agent **version** on every deploy (existing versions are preserved for rollback). |
+| `FOUNDRY_AGENT_MODEL` | ✅ | `gpt-4.1` | Chat model deployment used by the agent. Must already exist in the AI Services account. |
+| `FOUNDRY_AGENT_INSTRUCTIONS` | ✅ | (multiline) | System prompt. Default tells the agent to answer **only** from the knowledge source, decline unknowns, and emit URL citations. Customize per your tenant's tone/policy. |
+
+#### Auto-populated by the deploy script (do not set manually)
+
+After a successful run, the script appends a marker block to the bottom of `sharepoint-sync.env`:
+
+| Variable | Source |
+|---|---|
+| `FUNC_APP_HOSTNAME` | The actual Function App hostname (e.g. `sp-sync-func-XXXXXX.azurewebsites.net`) |
+| `SYNC_CONSOLE_URL` | Full sync-trigger URL with master key as `?code=`, ready to paste into a browser to open the Sync Console UI |
+
+These are written so re-runs and post-deploy operations (running a manual sync, reading logs) don't require re-discovering the random suffix.
 
 ### 14.10 Customer-Environment Configuration (optional overrides)
 
