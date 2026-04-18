@@ -375,7 +375,7 @@ async def sync_sharepoint_to_blob(config: Config) -> SyncStats:
                             continue
 
                     if change.change_type == DeltaChangeType.DELETED:
-                        # File deleted in SharePoint → delete blob
+                        # File deleted in SharePoint → mark blob for index removal
                         blob_name = blob_client._get_blob_name(change.item_path)
                         await logger.ainfo("Delta: file deleted",
                             item_id=change.item_id,
@@ -383,7 +383,10 @@ async def sync_sharepoint_to_blob(config: Config) -> SyncStats:
                         )
                         if config.delete_orphaned_blobs:
                             try:
-                                await blob_client.delete_blob(blob_name, dry_run=config.dry_run)
+                                if config.soft_delete_orphaned_blobs:
+                                    await blob_client.soft_delete_blob(blob_name, dry_run=config.dry_run)
+                                else:
+                                    await blob_client.delete_blob(blob_name, dry_run=config.dry_run)
                                 stats.files_deleted += 1
                             except Exception as e:
                                 await logger.aerror("Failed to delete blob",
@@ -524,7 +527,10 @@ async def sync_sharepoint_to_blob(config: Config) -> SyncStats:
                     for blob_name in existing_blobs:
                         if blob_name not in seen_blob_names:
                             try:
-                                await blob_client.delete_blob(blob_name, dry_run=config.dry_run)
+                                if config.soft_delete_orphaned_blobs:
+                                    await blob_client.soft_delete_blob(blob_name, dry_run=config.dry_run)
+                                else:
+                                    await blob_client.delete_blob(blob_name, dry_run=config.dry_run)
                                 stats.files_deleted += 1
                             except Exception as e:
                                 await logger.aerror("Failed to delete orphaned blob",
@@ -687,7 +693,10 @@ async def _sync_files_graph_delta(
                                 sharepoint_path=sp_file.path,
                                 blob_name=blob_name
                             )
-                            await blob_client.delete_blob(blob_name, dry_run=config.dry_run)
+                            if config.soft_delete_orphaned_blobs:
+                                await blob_client.soft_delete_blob(blob_name, dry_run=config.dry_run)
+                            else:
+                                await blob_client.delete_blob(blob_name, dry_run=config.dry_run)
                             stats.files_deleted += 1
                     continue
                 

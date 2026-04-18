@@ -297,6 +297,43 @@ class BlobStorageClient:
                 else:
                     raise
 
+    async def soft_delete_blob(self, blob_name: str, dry_run: bool = False) -> None:
+        """
+        Soft-delete a blob by setting metadata IsDeleted=true.
+
+        This is the safe orphan/deletion path: the blob stays around (audit
+        trail + recoverable) and the AI Search indexer's soft-delete column
+        policy (softDeleteColumnName=IsDeleted, softDeleteMarkerValue=true)
+        removes all index chunks projected from the blob on its next run.
+
+        If the blob is missing (already gone) we silently no-op so reruns are
+        idempotent.
+        """
+        if not self._container_client:
+            raise RuntimeError("Client not initialized. Use async with context manager.")
+
+        if dry_run:
+            await logger.ainfo("[DRY RUN] Would soft-delete blob (IsDeleted=true)", blob_name=blob_name)
+            return
+
+        blob_client = self._container_client.get_blob_client(blob_name)
+        try:
+            properties = await blob_client.get_blob_properties()
+        except Exception as e:
+            # If the blob is gone there is nothing to soft-delete; treat as success.
+            await logger.awarning("Soft-delete skipped (blob not found)", blob_name=blob_name, error=str(e))
+            return
+
+        existing_metadata = dict(properties.metadata or {})
+        if existing_metadata.get("IsDeleted") == "true":
+            await logger.ainfo("Blob already soft-deleted", blob_name=blob_name)
+            return
+
+        existing_metadata["IsDeleted"] = "true"
+        existing_metadata["deleted_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        await blob_client.set_blob_metadata(existing_metadata)
+        await logger.ainfo("Soft-deleted blob (IsDeleted=true)", blob_name=blob_name)
+
     async def _delete_directory_recursive(self, directory_path: str) -> None:
         """
         Recursively delete a directory and all its contents (for HNS-enabled storage).
