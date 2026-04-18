@@ -1799,9 +1799,50 @@ fi
 # Summary
 ###############################################################################
 echo ""
-# Retrieve master key + hostname for the summary banner
-FA_HOSTNAME=$(az functionapp show -g "$SPOKE_RG" -n "$FUNC_APP_NAME" --query defaultHostName -o tsv 2>/dev/null)
+# Retrieve master key + hostname for the summary banner.
+# NOTE: `az functionapp show` crashes on Flex Consumption in some CLI builds
+# (KeyError: 'properties' inside is_flex_functionapp). We use `az rest` against
+# the Microsoft.Web ARM API directly to avoid that codepath.
+FA_HOSTNAME=$(az rest --method GET \
+  --url "https://management.azure.com/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${SPOKE_RG}/providers/Microsoft.Web/sites/${FUNC_APP_NAME}?api-version=2023-12-01" \
+  --query "properties.defaultHostName" -o tsv 2>/dev/null)
 FUNC_MASTER_KEY=$(az functionapp keys list -g "$SPOKE_RG" -n "$FUNC_APP_NAME" --query masterKey -o tsv 2>/dev/null)
+SYNC_CONSOLE_URL=""
+if [ -n "$FA_HOSTNAME" ] && [ -n "$FUNC_MASTER_KEY" ]; then
+  SYNC_CONSOLE_URL="https://${FA_HOSTNAME}/api/sync?code=${FUNC_MASTER_KEY}"
+fi
+
+# Persist SYNC_CONSOLE_URL back into sharepoint-sync.env so the user can
+# re-find the trigger URL without re-running the deploy. We write/update an
+# auto-managed block at the bottom of the env file (delimited by markers so
+# repeat runs don't duplicate it).
+if [ -n "$SYNC_CONSOLE_URL" ] && [ -f "$ENV_FILE" ]; then
+  AUTO_BEGIN="# >>> auto-populated by 3-deploy-sharepoint-sync.sh (do not edit) >>>"
+  AUTO_END="# <<< auto-populated by 3-deploy-sharepoint-sync.sh <<<"
+  TMP_ENV=$(mktemp)
+  # Strip any previous auto-block + any standalone SYNC_CONSOLE_URL/FUNC_APP_HOSTNAME line
+  awk -v b="$AUTO_BEGIN" -v e="$AUTO_END" '
+    $0==b {skip=1; next}
+    $0==e {skip=0; next}
+    skip {next}
+    /^SYNC_CONSOLE_URL=/ {next}
+    /^FUNC_APP_HOSTNAME=/ {next}
+    {print}
+  ' "$ENV_FILE" > "$TMP_ENV"
+  # Trim trailing blank lines, then append fresh block
+  awk 'BEGIN{n=0} {lines[NR]=$0} END{ for(i=NR;i>=1 && lines[i]=="";i--); for(j=1;j<=i;j++) print lines[j] }' "$TMP_ENV" > "${TMP_ENV}.trim" && mv "${TMP_ENV}.trim" "$TMP_ENV"
+  {
+    echo ""
+    echo "$AUTO_BEGIN"
+    echo "# Refreshed every deploy. Open SYNC_CONSOLE_URL in a browser to manually"
+    echo "# trigger the SharePoint → Blob sync (delta + full reconcile menu)."
+    echo "FUNC_APP_HOSTNAME=${FA_HOSTNAME}"
+    echo "SYNC_CONSOLE_URL=${SYNC_CONSOLE_URL}"
+    echo "$AUTO_END"
+  } >> "$TMP_ENV"
+  mv "$TMP_ENV" "$ENV_FILE"
+  echo "  ✅ SYNC_CONSOLE_URL written to $(basename "$ENV_FILE")"
+fi
 
 echo "============================================"
 echo " ✅ SharePoint Sync Pipeline Deployed!"
@@ -1821,7 +1862,7 @@ echo "   Shared PL:      AI Search → Storage (blob)"
 echo "   FW Rule:        AllowSharePointSync"
 echo "   Foundry Agent:  ${FOUNDRY_AGENT_NAME:-sharepoint-search-agent} (azure_ai_search tool)"
 echo ""
-echo " 🔗 Sync Console URL (save this):"
+echo " 🔗 Sync Console URL (save this — also written to sharepoint-sync.env as SYNC_CONSOLE_URL):"
 echo "    https://${FA_HOSTNAME}/api/sync?code=${FUNC_MASTER_KEY}"
 echo ""
 echo " ⏱️  Schedules (adjust in sharepoint-sync.env and re-run deploy):"
