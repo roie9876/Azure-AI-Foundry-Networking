@@ -43,6 +43,7 @@
   - [14.1 What Problem Does This Solve?](#141-what-problem-does-this-solve)
   - [14.2 End-to-End Architecture](#142-end-to-end-architecture-zoomed-in)
   - [14.3 Ingest Flow — How Create / Update / Delete Propagate](#143-ingest-flow--how-create--update--delete-propagate)
+  - [14.3.1 Permission Flow Deep-Dive — How User/Group IDs Travel from SharePoint to the Index](#1431-permission-flow-deep-dive--how-usergroup-ids-travel-from-sharepoint-to-the-index)
   - [14.4 What Ends Up in the Index — Schema & ACL Model](#144-what-ends-up-in-the-index--schema--acl-model)
   - [14.5 How the Foundry Agent "Knows" About Permissions](#145-how-the-foundry-agent-knows-about-permissions--spoiler-it-doesnt-not-by-itself)
   - [14.6 Verifying That ACLs Landed Correctly](#146-verifying-that-acls-landed-correctly)
@@ -1372,6 +1373,130 @@ T≈2h    Worst-case latency for a SharePoint edit to appear in agent answers
 ```
 
 Both schedules are independent (both default to hourly). Tighten them, or trigger the Function manually from the portal for immediate sync.
+
+### 14.3.1 Permission Flow Deep-Dive — How User/Group IDs Travel from SharePoint to the Index
+
+This section traces a single ACL entry end-to-end. It complements §14.3 (which focuses on the **file** lifecycle) by focusing on the **permission** lifecycle and on the state file (`delta-token.json`) that makes the whole pipeline incremental.
+
+> **Terminology note.** The field names `acl_user_ids` / `acl_group_ids` and the blob metadata keys `user_ids` / `group_ids` are **not POSIX uid/gid**. SharePoint has no Unix IDs. What we store are **Microsoft Entra ID (Azure AD) Object IDs** — GUIDs like `a1b2c3d4-5678-...`. The naming convention comes from the [upstream Azure AI Search ACL push-API guidance](https://learn.microsoft.com/azure/search/search-index-access-control-lists-and-rbac-push-api).
+
+#### The full pipeline, layer by layer
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│ 1. SharePoint Online                                                     │
+│    Each file has a permission list: users + groups granted View/Edit.    │
+│    Each principal has an Entra Object ID (GUID).                         │
+└──────────────────┬───────────────────────────────────────────────────────┘
+                   │  Microsoft Graph API (SPN auth):
+                   │    /drives/{id}/items/{id}/permissions
+                   │    (optionally wrapped in /root/delta with Prefer:
+                   │     deltashowsharingchanges)
+                   ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│ 2. Function App (permissions_sync.py)                                    │
+│    - _extract_user_ids() / _extract_group_ids() pull raw GUIDs from      │
+│      the Graph permission objects.                                       │
+│    - merge_permissions_for_search() applies the Purview RMS overlay      │
+│      when SYNC_PURVIEW_PROTECTION=true (intersection of SP + RMS).       │
+│    - Result: effective_user_ids[], effective_group_ids[].                │
+│    - Encoded as pipe-delimited strings (GUIDs can't contain '|').        │
+└──────────────────┬───────────────────────────────────────────────────────┘
+                   │  Blob Storage REST (managed identity):
+                   │    PUT /<container>/<path> + set_blob_metadata()
+                   ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│ 3. Blob custom metadata (written on each file blob)                      │
+│    user_ids   = "<guid>|<guid>|<guid>"   (or placeholder 0000...0000)    │
+│    group_ids  = "<guid>|<guid>"          (or placeholder 0000...0001)    │
+│    sharepoint_permissions   = <raw JSON, for audit>                      │
+│    permissions_hash         = <stable hash for delta detection>          │
+│    permissions_synced_at    = <ISO timestamp>                            │
+│    purview_label_name / purview_is_encrypted / purview_protection_status │
+└──────────────────┬───────────────────────────────────────────────────────┘
+                   │  Azure AI Search indexer — blob metadata becomes
+                   │  /document/user_ids and /document/group_ids in the
+                   │  skillset context (NO 'metadata_' prefix for custom
+                   │  blob metadata — that prefix only applies to system
+                   │  metadata like metadata_storage_name).
+                   ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│ 4. Skillset indexProjections (3-deploy-sharepoint-sync.sh#L1252-L1253)   │
+│    For each chunk produced by the SplitSkill, copy the parent blob's     │
+│    ACL into the chunk's index document:                                  │
+│      {"name":"acl_user_ids",  "source":"/document/user_ids"}             │
+│      {"name":"acl_group_ids", "source":"/document/group_ids"}            │
+└──────────────────┬───────────────────────────────────────────────────────┘
+                   ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│ 5. Index fields (sharepoint-index)                                       │
+│    acl_user_ids  : Edm.String, filterable, retrievable                   │
+│    acl_group_ids : Edm.String, filterable, retrievable                   │
+│    Values are the SAME pipe-delimited strings written in step 3.         │
+│    Query with:  $filter=search.ismatch('<user-oid>','acl_user_ids')      │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+#### The delta state file: `.sync-state/delta-token.json`
+
+The Function App never wants to re-enumerate the entire SharePoint drive on every hourly run. It persists a **Microsoft Graph delta cursor** in the same blob container as the data:
+
+```
+<storage-account>/<container>/.sync-state/delta-token.json
+```
+
+| Aspect | Value |
+|---|---|
+| Format | `{"delta_link": "<https-url-with-opaque-token>", "saved_at": "<ISO-timestamp>"}` |
+| Written by | [`blob_client.py` `save_delta_token()`](deployment/sharepoint-sync-func/blob_client.py#L491) |
+| Read by | [`blob_client.py` `load_delta_token()`](deployment/sharepoint-sync-func/blob_client.py#L465) |
+| Auth | Function App managed identity (Storage Blob Data Contributor) |
+| Lifetime | Survives cold starts, redeploys, scale-out — blob storage is the only persistent state plane for Flex Consumption |
+
+How it's used on each run:
+
+1. **First run** → no blob exists → call `GET /drives/{id}/root/delta` → Graph returns every item + an `@odata.deltaLink` URL → upload all files to blob → save the `deltaLink` to `delta-token.json`.
+2. **Subsequent runs** → load the saved `deltaLink` → `GET {deltaLink}` → Graph returns **only** items changed since last run + a fresh `deltaLink` → write the diff to blob → overwrite `delta-token.json` with the new cursor.
+3. **Permission-only changes** are included when the Function sends the Graph header `Prefer: deltashowsharingchanges`.
+
+When to reset it:
+
+| Situation | Action |
+|---|---|
+| You changed `SHAREPOINT_DRIVE_NAME` or `SHAREPOINT_FOLDER_PATH` | Delete `delta-token.json` — the saved cursor points to a different scope. |
+| Graph returns `410 Gone` (cursor expired, typically >30 days inactive) | Handled automatically: code falls back to a full sync and saves a fresh cursor. |
+| You want to force a full re-crawl | Set `FORCE_FULL_SYNC=true` on the Function App (one-shot) **or** delete the blob. |
+| Full cleanup + redeploy | Empty the blob container — `delta-token.json` goes with it; next run is full. |
+
+Reset manually:
+
+```bash
+az storage blob delete \
+  --account-name "$AZURE_STORAGE_ACCOUNT_NAME" \
+  -c "$AZURE_BLOB_CONTAINER_NAME" \
+  -n .sync-state/delta-token.json \
+  --auth-mode login
+```
+
+> **Not to be confused with:** the per-drive files under `.delta_tokens/delta_token_*.json` that appear when `PERMISSIONS_DELTA_MODE=graph_delta`. Those are a secondary cursor used only for the *permissions* delta API, and live on the Function's local disk (`DELTA_TOKEN_STORAGE_PATH`, default `.delta_tokens`). The primary file-level cursor is always `.sync-state/delta-token.json` in blob storage.
+
+#### Placeholder GUIDs — why you see `00000000-0000-0000-0000-000000000000`
+
+Azure AI Search's blob indexer **drops empty metadata values**. If a file is shared only with users (no groups) or only with groups (no users), we still need *some* value in the other field so the skillset's projection fires. The Function writes sentinel GUIDs that match nobody:
+
+| Field | Placeholder when empty | Meaning |
+|---|---|---|
+| `user_ids`  | `00000000-0000-0000-0000-000000000000` | "No specific users — access is controlled by groups." |
+| `group_ids` | `00000000-0000-0000-0000-000000000001` | "No specific groups — access is controlled by users." |
+
+No real Entra Object ID will ever match these, so they're safe to ignore at query time. Your `$filter` will naturally return zero matches on these placeholders and non-zero on real GUIDs.
+
+#### Known pitfalls (sized correctly, but worth knowing)
+
+1. **8 KB metadata cap.** Azure Storage limits total custom blob metadata to ~8 KB. A file shared with hundreds of direct users can silently truncate. Mitigation: share via groups (1 GUID ≪ N user GUIDs) or fall back to pulling ACLs from a sidecar blob.
+2. **Metadata updates don't bump `Last-Modified`.** If the Function only rewrites metadata (permission-only change on a file whose content is unchanged), the indexer's default change detector may skip the blob. The Function sidesteps this by re-uploading the (identical) content so `Last-Modified` advances. Confirm by watching `permissions_synced_at` in blob metadata after a permission-only edit in SharePoint.
+3. **The indexer must have the skillset projection.** Hand-built indexers (e.g. created via the Foundry UI) often lack the `indexProjections` entry that copies `user_ids`/`group_ids` onto each chunk. See §14.6 for a quick verification query, and [§14.14](#1414-troubleshooting) for the ACL troubleshooting checklist.
+4. **Agent doesn't enforce ACLs automatically.** The index holds the ACL; the application layer must inject the `$filter`. See §14.5 patterns A/B/C.
 
 ### 14.4 What Ends Up in the Index — Schema & ACL Model
 
