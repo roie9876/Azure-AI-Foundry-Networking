@@ -48,6 +48,8 @@
   - [14.5 How the Foundry Agent "Knows" About Permissions](#145-how-the-foundry-agent-knows-about-permissions--spoiler-it-doesnt-not-by-itself)
   - [14.6 Verifying That ACLs Landed Correctly](#146-verifying-that-acls-landed-correctly)
   - [14.7 `azure_ai_search` Tool vs. Knowledge Source](#147-azure_ai_search-tool-vs-knowledge-source--why-we-picked-the-tool)
+  - [14.7.1 Opt-in: Agentic Retrieval (Knowledge Base via MCP)](#1471-opt-in-agentic-retrieval-knowledge-base-via-mcp-side-by-side)
+  - [14.7.1.1 How Agentic Retrieval Validates the Answer (and When It Re-Queries)](#14711-how-agentic-retrieval-validates-the-answer-and-when-it-re-queries)
   - [14.7.2 The Three Model Pickers in the KB Pipeline](#1472-the-three-model-pickers-in-the-knowledge-base-pipeline--why-there-are-three-and-why-most-show-only-gpt-41)
   - [14.8 Prerequisites](#148-prerequisites)
   - [14.9 Deploy the SharePoint Sync Layer](#149-deploy-the-sharepoint-sync-layer)
@@ -1739,6 +1741,101 @@ Re-running `./3-deploy-sharepoint-sync.sh` creates:
 - **Foundry agent** `sharepoint-agentic` — a second agent that uses the MCP tool
 
 The primary agent (`${FOUNDRY_AGENT_NAME}`) is untouched. Pick the one you prefer in the Playground, or flip the flag back to `false` to stop creating the agentic agent (existing resources are left in place until you delete them manually).
+
+#### 14.7.1.1 How Agentic Retrieval Validates the Answer (and When It Re-Queries)
+
+A common question: *"Once the agent gets results back, does anything check that the answer actually grounds the user's question? And if the grounding is weak, does it re-phrase and retry?"*
+
+The short answer: **yes — but only at `medium` reasoning effort, and the retry is capped at exactly one extra pass.** The validation lives inside the AI Search **Knowledge Base retrieval engine**, not inside the Foundry agent. The behavior is fully determined by the `retrievalReasoningEffort` knob (`AGENTIC_REASONING_EFFORT` in [`sharepoint-sync.env`](deployment/sharepoint-sync.env.example)).
+
+##### What each reasoning level does
+
+| Level | LLM query planning | Grounding-quality check | Retry on weak results | Hard ceilings |
+|---|---|---|---|---|
+| `minimal` | None — your query is sent directly | None | None | 10 knowledge sources max; `extractiveData` only |
+| `low` *(default)* | Single planner pass; query decomposed into subqueries | None | None | ≤ 3 subqueries from ≤ 3 knowledge sources; 50 docs L2 / 10 docs L3; 5,000 answer tokens |
+| `medium` | Planner pass + **enhanced retrieval stack** | **L3 semantic classifier** (0.0 – 4.0) evaluates whether the first pass is sufficiently relevant | **One** revised iteration if classifier says "not enough" | ≤ 5 subqueries from ≤ 5 knowledge sources; 50 docs L2 / 20 docs L3; 10,000 answer tokens; region-restricted |
+
+Authoritative source: [Set the retrieval reasoning effort — *Iterative search for medium retrieval*](https://learn.microsoft.com/en-us/azure/search/agentic-retrieval-how-to-set-retrieval-reasoning-effort#iterative-search-for-medium-retrieval).
+
+##### The medium-effort loop, step by step
+
+```
+                ┌──────────────────────────────────────────────────┐
+   user query ─▶│ 1. Planner LLM (gpt-4.1) decomposes into        │
+                │    N subqueries (≤ 5 at medium)                  │
+                └──────────────────────┬───────────────────────────┘
+                                       ▼
+                ┌──────────────────────────────────────────────────┐
+                │ 2. Fan-out to knowledge sources (parallel)       │
+                │    each subquery → hybrid search → L2 rerank     │
+                └──────────────────────┬───────────────────────────┘
+                                       ▼
+                ┌──────────────────────────────────────────────────┐
+                │ 3. L3 semantic classifier (the "validator")      │
+                │    — Is there enough context to answer?          │
+                │    — Score 0.0 – 4.0 on retrieved docs           │
+                └──────────────┬───────────────────────┬───────────┘
+                          good │                       │ insufficient
+                               ▼                       ▼
+                    ┌────────────────┐   ┌──────────────────────────────┐
+                    │ Merge & return │   │ 4. Revised query plan        │
+                    └────────────────┘   │    — fine-tune wording       │
+                                         │    — broaden terms           │
+                                         │    — pick different / extra  │
+                                         │      knowledge sources       │
+                                         │    — may add web source      │
+                                         └──────────────┬───────────────┘
+                                                        ▼
+                                         ┌──────────────────────────────┐
+                                         │ 5. Second (and FINAL) pass   │
+                                         │    Re-rank with L3, merge,   │
+                                         │    return — no third try.    │
+                                         └──────────────────────────────┘
+```
+
+Key facts straight from the Microsoft doc:
+
+- **The validator is a separate model**, not the planner. Microsoft calls it the *"high-precision semantic classifier"* and the rescoring step *"L3 classification"* (range 0.0 – 4.0, identical scale to L2 reranking).
+- **The retry is bounded to one pass.** Quote: *"There's only one retry. Each iteration adds latency and cost, so the system constrains retry to one pass."*
+- **The second iteration can change strategy** — fine-tune queries, broaden terms, or pick a different knowledge source (including the optional web source). It's not just a re-run of the same plan.
+- **You always pay for the second pass when it triggers** — its input tokens add to the billable count.
+
+##### What is *not* in the loop
+
+- **No factual / hallucination check on the final agent answer.** The L3 classifier judges *retrieval sufficiency* (do we have grounding material?), not *answer correctness*. If you need answer-level groundedness scoring, that's a separate Foundry feature — see [Evaluation of generative AI applications — Groundedness](https://learn.microsoft.com/en-us/azure/ai-foundry/concepts/evaluation-metrics-built-in#groundedness) and [Azure AI Content Safety — Groundedness Detection](https://learn.microsoft.com/en-us/azure/ai-services/content-safety/concepts/groundedness).
+- **No infinite loop.** Even at `medium`, total search iterations are **at most 2** (initial + 1 retry). At `low` and `minimal` it's exactly 1.
+- **No retry at `low`.** This is the default in this repo — keep that in mind when tuning. Bumping to `medium` is the only way to get the validator + retry behavior.
+
+##### Where to see it actually happen
+
+Every retrieve response includes an **`activity` array** that lists every subquery the engine ran, including the second-iteration ones if the classifier triggered the retry. That's your audit trail. Reference: [How to retrieve — Activity array](https://learn.microsoft.com/en-us/azure/search/search-agentic-retrieval-how-to-retrieve#activity-array).
+
+A quick way to inspect it from this repo's deployment:
+
+```bash
+# Loads sharepoint-sync.env and POSTs a retrieve action to the KB MCP endpoint.
+./deployment/test-agentic-retrieval.sh "your multi-part question here" | jq '.activity'
+```
+
+If you bumped `AGENTIC_REASONING_EFFORT=medium` and asked a deliberately under-grounded question, you'll see two batches of subqueries in the array (the original plan + the revised plan). At `low` you'll only ever see one batch.
+
+##### Picking a level for this deployment
+
+| Scenario | Recommended `AGENTIC_REASONING_EFFORT` |
+|---|---|
+| Single SharePoint index, single-intent questions, latency-sensitive | `minimal` or `low` (default) |
+| Multi-part questions across SharePoint + other knowledge sources | `low` |
+| "I need the agent to dig harder when the first pass looks weak", and you accept ~2× latency / ~2× planner tokens on tough questions | `medium` (only in the [supported regions](https://learn.microsoft.com/en-us/azure/search/agentic-retrieval-how-to-set-retrieval-reasoning-effort#region-support-for-medium-retrieval)) |
+
+##### Reference links
+
+- [Agentic retrieval in Azure AI Search — Overview](https://learn.microsoft.com/en-us/azure/search/search-agentic-retrieval-overview)
+- [Set the retrieval reasoning effort](https://learn.microsoft.com/en-us/azure/search/agentic-retrieval-how-to-set-retrieval-reasoning-effort) *(this is the canonical doc for the validate-and-retry mechanism)*
+- [Iterative search for medium retrieval](https://learn.microsoft.com/en-us/azure/search/agentic-retrieval-how-to-set-retrieval-reasoning-effort#iterative-search-for-medium-retrieval)
+- [How to retrieve — Activity array (audit trail)](https://learn.microsoft.com/en-us/azure/search/search-agentic-retrieval-how-to-retrieve#activity-array)
+- [Build an end-to-end agentic retrieval pipeline (tutorial)](https://learn.microsoft.com/en-us/azure/search/search-agentic-retrieval-how-to-pipeline)
+- [Knowledge Base REST API — `2025-11-01-preview`](https://learn.microsoft.com/en-us/rest/api/searchservice/knowledge-bases/create-or-update?view=rest-searchservice-2025-11-01-preview&preserve-view=true)
 
 #### 14.7.2 The Three Model Pickers in the Knowledge Base Pipeline — Why There Are *Three*, and Why Most Show Only `gpt-4.1`
 
