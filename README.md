@@ -48,6 +48,7 @@
   - [14.5 How the Foundry Agent "Knows" About Permissions](#145-how-the-foundry-agent-knows-about-permissions--spoiler-it-doesnt-not-by-itself)
   - [14.6 Verifying That ACLs Landed Correctly](#146-verifying-that-acls-landed-correctly)
   - [14.7 `azure_ai_search` Tool vs. Knowledge Source](#147-azure_ai_search-tool-vs-knowledge-source--why-we-picked-the-tool)
+  - [14.7.2 The Three Model Pickers in the KB Pipeline](#1472-the-three-model-pickers-in-the-knowledge-base-pipeline--why-there-are-three-and-why-most-show-only-gpt-41)
   - [14.8 Prerequisites](#148-prerequisites)
   - [14.9 Deploy the SharePoint Sync Layer](#149-deploy-the-sharepoint-sync-layer)
   - [14.9.1 `sharepoint-sync.env` — Parameter Reference](#1491-sharepoint-syncenv--parameter-reference)
@@ -1738,6 +1739,108 @@ Re-running `./3-deploy-sharepoint-sync.sh` creates:
 - **Foundry agent** `sharepoint-agentic` — a second agent that uses the MCP tool
 
 The primary agent (`${FOUNDRY_AGENT_NAME}`) is untouched. Pick the one you prefer in the Playground, or flip the flag back to `false` to stop creating the agentic agent (existing resources are left in place until you delete them manually).
+
+#### 14.7.2 The Three Model Pickers in the Knowledge Base Pipeline — Why There Are *Three*, and Why Most Show Only `gpt-4.1`
+
+When you build an agent with a Knowledge Base, Foundry asks you to pick a model in **three different places**. Customers consistently ask: *"why three? Which one matters? And why does the Knowledge Base dropdown only show `gpt-4.1` even though I have `gpt-5`, `gpt-5.4`, etc. deployed in my project?"*
+
+The short answer: each picker drives a **different layer** of the pipeline, runs on a **different service**, and is constrained by a **different supported-model list**. They are not the same setting in three places.
+
+##### Layer-by-layer
+
+```
+End user
+   │
+   ▼
+┌─────────────────────────────────────────────────────────────┐
+│ Layer 1 — Agent model (Playground → "Model")                │
+│   • The agent's brain. Decides whether to call the KB tool, │
+│     formats the final answer, applies system instructions,  │
+│     handles multi-turn memory, guardrails, function calls.  │
+│   • Runs on Microsoft Foundry / Azure OpenAI.               │
+│   • Allowed models: any chat-completions model deployed in  │
+│     the project (gpt-4o, gpt-4.1, gpt-5, gpt-5.4, …).       │
+└─────────────────────────────────────────────────────────────┘
+   │  knowledge_base_retrieve(query, history)
+   ▼
+┌─────────────────────────────────────────────────────────────┐
+│ Layer 2 — Knowledge Base "Chat completions model"           │
+│           (the agentic-retrieval *query planner*)           │
+│   • Reads the chat thread, decomposes the question into N   │
+│     parallel subqueries, fixes typos, expands synonyms,     │
+│     optionally synthesises an answer from the merged hits.  │
+│   • Runs inside **Azure AI Search**, not Foundry.           │
+│   • Allowed models (Azure AI Search constraint):            │
+│     **only `gpt-4o`, `gpt-4.1`, and `gpt-5` series.**       │
+│   • This is also where `retrievalReasoningEffort` and       │
+│     `outputMode` (extractiveData vs answerSynthesis) live.  │
+└─────────────────────────────────────────────────────────────┘
+   │  N parallel subqueries
+   ▼
+┌─────────────────────────────────────────────────────────────┐
+│ Layer 3 — Knowledge Source models (per-source, e.g. Blob)   │
+│   • Embedding model — vectorises documents at ingest time   │
+│     **and** the query at search time. Must match across     │
+│     index-time and query-time, so it is pinned per source.  │
+│   • Chat completions model — content extraction / enrich-   │
+│     ment of raw files (OCR-ish parsing, table/figure        │
+│     description, chunk summarisation; "Minimal" vs          │
+│     "Enriched" extraction mode).                            │
+│   • Runs inside Azure AI Search indexer skillsets.          │
+│   • Not present for SharePoint KS (Microsoft 365 indexes    │
+│     and ranks server-side; Foundry just federates the       │
+│     query). Present for Blob, Web, and similar sources      │
+│     where Foundry has to build the index itself.            │
+└─────────────────────────────────────────────────────────────┘
+   │  hybrid + semantic search hits
+   ▼
+back up Layer 2 → back up Layer 1 → answer + citations to user
+```
+
+##### Quick comparison
+
+| Picker | What it does | Where it runs | Allowed models | When it consumes tokens |
+|---|---|---|---|---|
+| **Playground → Model** (Layer 1) | Agent reasoning, tool selection, final answer | Microsoft Foundry / Azure OpenAI | **Any** chat model deployed in the project | Every user turn |
+| **Knowledge Base → Chat completions model** (Layer 2) | Agentic-retrieval query planner; optional answer synthesis | **Azure AI Search** | **Only** `gpt-4o`, `gpt-4.1`, `gpt-5` series — Search service constraint | Every retrieval call |
+| **Knowledge Source (e.g. Blob) → Embedding + Chat completions** (Layer 3) | Vectorise + extract content during ingestion | Azure AI Search indexer skillsets | An embedding model + a chat model the skill supports | Once per document at indexing time |
+
+##### "Why does the Knowledge Base dropdown only show `gpt-4.1`?" — The two real causes
+
+This is the question customers actually hit in the portal. Two things cause it; check both:
+
+1. **Azure AI Search supports a fixed list for query planning.**
+   The Knowledge Base picker is **not** showing every model in your Foundry project — it is showing the intersection of *(models deployed in your project)* ∩ *(models supported by Azure AI Search agentic retrieval)*. Per the [official docs](https://learn.microsoft.com/en-us/azure/search/search-agentic-retrieval-concept):
+
+   > *"Only `gpt-4o`, `gpt-4.1`, and `gpt-5` series models are supported for query planning."*
+
+   So a `gpt-3.5-turbo`, `o1`, or any non-listed model deployed in your project will simply not appear here. This is not a bug — it is a Search-service constraint.
+
+2. **The model must actually be deployed *in this Foundry project* with a healthy status.**
+   The dropdown reads from the project's deployed models, not from the catalog. If you only see `gpt-4.1`, then `gpt-5` / `gpt-5.4` are not actually deployed in *this* project (they may be deployed in a different project, in a stand-alone Azure OpenAI resource, or only in the model catalog). "Browse more models" lets you pick from the catalog but the value will fail to save unless a deployment with that exact name exists.
+
+   Verify with:
+
+   ```bash
+   # List chat-completions deployments in the AOAI / Foundry account backing this project
+   az cognitiveservices account deployment list \
+     --name <foundry-account-name> -g <rg> \
+     --query "[].{name:name, model:properties.model.name, version:properties.model.version, state:properties.provisioningState}" \
+     -o table
+   ```
+
+   The `name` column is what the portal expects. If you deployed the model with a custom deployment name (e.g. `gpt-5-prod`), you must type that exact name — not the model family name.
+
+##### Practical implications
+
+- Pair a **cheap planner** (e.g. `gpt-4o-mini` family at Layer 2, when supported) with a **strong reasoner** (e.g. `gpt-5.x` at Layer 1) to cut retrieval latency/cost without hurting answer quality.
+- Changing the **embedding model** on a Blob KS after indexing means **re-indexing** — vectors are not portable across embedding models.
+- `retrievalReasoningEffort = low` only affects Layer 2; it does **not** affect what Layer 1 does with the returned grounding.
+- Token bills land in **three different places**: agent tokens on the agent's AOAI deployment, planner tokens on the KB's deployment, ingestion tokens on the KS's deployment.
+
+##### Reference
+
+- [Agentic retrieval in Azure AI Search](https://learn.microsoft.com/en-us/azure/search/search-agentic-retrieval-concept) — architecture, required components, and the supported-model note for query planning.
 
 ### 14.8 Prerequisites
 
