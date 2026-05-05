@@ -136,7 +136,7 @@ By default, these communications go over the Azure backbone network using public
 
 **This is the big one.** When your AI agents run, they need to reach data sources, APIs, and tools. This traffic comes from the **Agent Service compute** — the container that executes your agent code.
 
-**This is where it gets complicated**, because Microsoft offers **three different options** for securing this traffic. That's the next section.
+**This is where it gets complicated**, because Microsoft offers **2 different options** for securing this traffic. That's the next section.
 
 ---
 
