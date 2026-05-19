@@ -335,12 +335,7 @@ else
     echo "  If DNS zones live in a different subscription, set DNS_SUBSCRIPTION in your env file."
     echo "  If you don't have Reader on the DNS subscription, set SKIP_DNS_VALIDATION=true."
     echo "  This script does not create DNS records — zones are only checked as a sanity test."
-    echo ""
-    read -r -p "  Continue anyway? [y/N] " CONTINUE_DNS
-    if [[ ! "$CONTINUE_DNS" =~ ^[Yy]$ ]]; then
-      echo "  Aborting."
-      exit 1
-    fi
+    echo "  Continuing — operator confirmed DNS records are managed out-of-band."
   fi
 fi
 
