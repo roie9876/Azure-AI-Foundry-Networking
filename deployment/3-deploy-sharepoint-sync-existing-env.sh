@@ -1179,36 +1179,42 @@ echo "  Function App kind: $FUNC_KIND (Flex=$IS_FLEX)"
 PUBLISH_OK=0
 PUBLISH_LAST_ERR=""
 
-# Primary path: az CLI's deployment API.
+# Deploy strategy:
 #
-# Why az CLI first (and not the raw curl /api/publish that the eli-tectika
-# script uses): az CLI is a Python program and honors WinHTTP / system proxy
-# settings out of the box. Customers in corporate environments (forced web
-# proxy, TLS interception, restricted egress) routinely have working az but
-# a curl that gets HTTP 000 (connection refused / TLS handshake failure /
-# proxy required). az also retries internally and handles SCM's quirks across
-# Flex / EP / Consumption.
-for ATTEMPT in 1 2 3; do
-  echo "  Publish attempt $ATTEMPT/3 (az functionapp deployment source config-zip)..."
+# By default we go STRAIGHT to blob-based WEBSITE_RUN_FROM_PACKAGE because
+# it is (a) the Microsoft-recommended production deploy method, (b) the
+# only path that reliably works through corporate proxies / locked-down
+# networks (uses storage data-plane endpoints, not the per-app SCM domain),
+# and (c) immune to Kudu's PushDeploymentController bugs on Linux Elastic
+# Premium with dotnet-isolated.
+#
+# To opt back into the SCM zip-deploy path (az functionapp deployment
+# source config-zip + raw /api/publish curl), set TRY_SCM_FIRST=1. We only
+# do ONE attempt with a 180s ceiling — if SCM works it works fast; if it
+# hangs (proxy / private-endpoint), we cut over to blob immediately rather
+# than burning 15 minutes on retries.
+if [ "${TRY_SCM_FIRST:-0}" = "1" ]; then
+  echo "  TRY_SCM_FIRST=1 set — attempting SCM-based publish before blob fallback."
+
+  echo "  Publish attempt (az functionapp deployment source config-zip, 180s ceiling)..."
   if az functionapp deployment source config-zip \
       -g "$SPOKE_RG" -n "$FUNC_APP_NAME" \
       --src "$DEPLOY_ZIP" \
       --build-remote false \
-      --timeout 900 \
+      --timeout 180 \
       --output none 2>/tmp/pub-err.txt; then
     echo "  ✅ Accepted (az CLI)"
     PUBLISH_OK=1
-    break
+  else
+    PUBLISH_LAST_ERR=$(head -c 600 /tmp/pub-err.txt 2>/dev/null || echo "")
+    echo "  ⚠️  az CLI publish failed: $PUBLISH_LAST_ERR"
   fi
-  PUBLISH_LAST_ERR=$(head -c 600 /tmp/pub-err.txt 2>/dev/null || echo "")
-  echo "  ⚠️  $PUBLISH_LAST_ERR"
-  [ "$ATTEMPT" -lt 3 ] && sleep 20
-done
+fi
 
 # Backup path: raw POST to SCM /api/publish with an ARM bearer token. Useful
 # when az CLI gets a transient failure but the underlying endpoint works.
-# Skipped immediately on HTTP 000 (no point retrying network errors).
-if [ "$PUBLISH_OK" != "1" ]; then
+# Only attempted when TRY_SCM_FIRST=1. Skipped immediately on HTTP 000.
+if [ "${TRY_SCM_FIRST:-0}" = "1" ] && [ "$PUBLISH_OK" != "1" ]; then
   echo ""
   echo "  az CLI publish failed. Trying raw SCM /api/publish..."
   SCM_HOST="${FUNC_APP_NAME}.scm.azurewebsites.net"
@@ -1256,17 +1262,24 @@ if [ "$PUBLISH_OK" != "1" ]; then
   fi
 fi
 
-# Fallback path: blob-based Run-From-Package. This is the most reliable deploy
+# Primary path: blob-based Run-From-Package. This is the most reliable deploy
 # method for locked-down apps where Kudu's SCM /api/publish controller is
-# broken (e.g. Linux Elastic Premium with WEBSITE_RUN_FROM_PACKAGE already set,
-# private-endpoint-isolated SCM, or Kudu Lite). It uploads the zip to the
-# Function App's existing storage account and points the app at it via SAS.
+# unreachable or broken (e.g. Linux Elastic Premium behind a corporate
+# proxy, private-endpoint-isolated SCM, or Kudu Lite). It uploads the zip
+# to the Function App's existing storage account and points the app at it
+# via SAS. Microsoft also recommends this method for production workloads
+# (https://learn.microsoft.com/azure/azure-functions/run-functions-from-deployment-package).
 if [ "$PUBLISH_OK" != "1" ]; then
   echo ""
-  echo "  ⚠️  SCM zip-deploy did not succeed. Falling back to blob-based"
-  echo "     Run-From-Package (WEBSITE_RUN_FROM_PACKAGE)."
-  echo "     Last SCM error:"
-  echo "$PUBLISH_LAST_ERR" | head -3 | sed 's/^/       /'
+  if [ "${TRY_SCM_FIRST:-0}" = "1" ]; then
+    echo "  ⚠️  SCM zip-deploy did not succeed. Falling back to blob-based"
+    echo "     Run-From-Package (WEBSITE_RUN_FROM_PACKAGE)."
+    echo "     Last SCM error:"
+    echo "$PUBLISH_LAST_ERR" | head -3 | sed 's/^/       /'
+  else
+    echo "  Deploying via blob WEBSITE_RUN_FROM_PACKAGE (default path)."
+    echo "  (To try SCM zip-deploy first, set TRY_SCM_FIRST=1.)"
+  fi
   echo ""
 
   RFP_CONTAINER="scm-releases"
