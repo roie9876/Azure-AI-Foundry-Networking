@@ -1154,7 +1154,7 @@ PKG_DIR=$(mktemp -d -t sp-sync-pub-XXXX)
 echo "  Publishing to: $PKG_DIR"
 if ! dotnet publish "$FUNC_SRC_DIR/SharePointSyncFunc.csproj" \
       -c Release -o "$PKG_DIR" \
-      /p:UseAppHost=false \
+      -p:UseAppHost=false \
       --nologo -v minimal 2>/tmp/pub-err.txt; then
   echo "  ❌ dotnet publish failed:"
   head -c 2000 /tmp/pub-err.txt
