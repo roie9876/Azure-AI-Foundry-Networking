@@ -490,19 +490,23 @@ SEARCH_MGMT_API="2025-05-01"
 EXISTING_SPLS=$(az rest --method GET \
   --url "https://management.azure.com/subscriptions/$SUBSCRIPTION/resourceGroups/$SPOKE_RG/providers/Microsoft.Search/searchServices/$AI_SEARCH_NAME/sharedPrivateLinkResources?api-version=${SEARCH_MGMT_API}" \
   -o json 2>/dev/null || echo '{"value":[]}')
+SPL_COUNT=$(echo "$EXISTING_SPLS" | python3 -c "import json,sys; print(len(json.load(sys.stdin).get('value',[])))" 2>/dev/null || echo 0)
+echo "  Found $SPL_COUNT existing shared private link(s)"
 
 spl_exists() {
   local TARGET_ID="$1" GROUP_ID="$2"
-  echo "$EXISTING_SPLS" | python3 -c "
+  python3 -c "
 import json,sys
-data = json.load(sys.stdin)
+data = json.loads(sys.argv[1])
+tid = sys.argv[2].lower()
+gid = sys.argv[3]
 for v in data.get('value',[]):
     p = v.get('properties',{})
-    if p.get('privateLinkResourceId','').lower() == '${TARGET_ID}'.lower() and p.get('groupId') == '${GROUP_ID}':
+    if p.get('privateLinkResourceId','').lower() == tid and p.get('groupId') == gid:
         print(v['name'])
         sys.exit(0)
 sys.exit(1)
-" 2>/dev/null
+" "$EXISTING_SPLS" "$TARGET_ID" "$GROUP_ID" 2>/dev/null
 }
 
 # --- SPL: AI Search → Storage (blob) ---
@@ -510,7 +514,7 @@ EXISTING_BLOB_SPL=$(spl_exists "$STORAGE_ID" "blob" || true)
 if [ -n "$EXISTING_BLOB_SPL" ]; then
   echo "  ✅ SPL for Storage/blob already exists: $EXISTING_BLOB_SPL (skipping)"
 else
-  az rest --method PUT \
+  SPL_RESULT=$(az rest --method PUT \
     --url "https://management.azure.com/subscriptions/$SUBSCRIPTION/resourceGroups/$SPOKE_RG/providers/Microsoft.Search/searchServices/$AI_SEARCH_NAME/sharedPrivateLinkResources/spl-storage-blob?api-version=${SEARCH_MGMT_API}" \
     --body "{
       \"properties\": {
@@ -519,8 +523,17 @@ else
         \"requestMessage\": \"AI Search indexer needs access to SharePoint sync blobs\"
       }
     }" \
-    --output none
+    --output none 2>&1) || {
+    if echo "$SPL_RESULT" | grep -qi "already exists\|conflict"; then
+      echo "  ✅ SPL spl-storage-blob already exists (skipping)"
+      EXISTING_BLOB_SPL="spl-storage-blob"
+    else
+      echo "  ⚠️  SPL spl-storage-blob creation failed: $SPL_RESULT"
+      echo "     Continuing — it may already exist under a different name"
+    fi
+  }
 
+  if [ -z "${EXISTING_BLOB_SPL:-}" ]; then
   echo "  ⏳ SPL spl-storage-blob created. Waiting 30s for provisioning..."
   sleep 30
 
@@ -536,6 +549,7 @@ else
   else
     echo "  ⚠️  PE connection not found or already approved"
   fi
+  fi
 fi
 
 # --- SPL: AI Search → AI Services (OpenAI) ---
@@ -543,7 +557,7 @@ EXISTING_OPENAI_SPL=$(spl_exists "$AI_SERVICES_ID" "openai_account" || true)
 if [ -n "$EXISTING_OPENAI_SPL" ]; then
   echo "  ✅ SPL for AI Services/openai_account already exists: $EXISTING_OPENAI_SPL (skipping)"
 else
-  az rest --method PUT \
+  SPL_RESULT=$(az rest --method PUT \
     --url "https://management.azure.com/subscriptions/$SUBSCRIPTION/resourceGroups/$SPOKE_RG/providers/Microsoft.Search/searchServices/$AI_SEARCH_NAME/sharedPrivateLinkResources/spl-openai?api-version=${SEARCH_MGMT_API}" \
     --body "{
       \"properties\": {
@@ -552,8 +566,15 @@ else
         \"requestMessage\": \"AI Search skillset needs access to OpenAI embeddings\"
       }
     }" \
-    --output none
-  echo "  ✅ SPL spl-openai created"
+    --output none 2>&1) && echo "  ✅ SPL spl-openai created" || {
+    if echo "$SPL_RESULT" | grep -qi "already exists\|conflict"; then
+      echo "  ✅ SPL spl-openai already exists (skipping)"
+      EXISTING_OPENAI_SPL="spl-openai"
+    else
+      echo "  ⚠️  SPL spl-openai creation failed: $SPL_RESULT"
+      echo "     Continuing — it may already exist under a different name"
+    fi
+  }
 fi
 
 # --- SPL: AI Search → AI Services (Cognitive Services) ---
@@ -561,7 +582,7 @@ EXISTING_COG_SPL=$(spl_exists "$AI_SERVICES_ID" "cognitiveservices_account" || t
 if [ -n "$EXISTING_COG_SPL" ]; then
   echo "  ✅ SPL for AI Services/cognitiveservices_account already exists: $EXISTING_COG_SPL (skipping)"
 else
-  az rest --method PUT \
+  SPL_RESULT=$(az rest --method PUT \
     --url "https://management.azure.com/subscriptions/$SUBSCRIPTION/resourceGroups/$SPOKE_RG/providers/Microsoft.Search/searchServices/$AI_SEARCH_NAME/sharedPrivateLinkResources/spl-cognitive?api-version=${SEARCH_MGMT_API}" \
     --body "{
       \"properties\": {
@@ -570,8 +591,15 @@ else
         \"requestMessage\": \"AI Search skillset needs access to Cognitive Services (OCR)\"
       }
     }" \
-    --output none
-  echo "  ✅ SPL spl-cognitive created"
+    --output none 2>&1) && echo "  ✅ SPL spl-cognitive created" || {
+    if echo "$SPL_RESULT" | grep -qi "already exists\|conflict"; then
+      echo "  ✅ SPL spl-cognitive already exists (skipping)"
+      EXISTING_COG_SPL="spl-cognitive"
+    else
+      echo "  ⚠️  SPL spl-cognitive creation failed: $SPL_RESULT"
+      echo "     Continuing — it may already exist under a different name"
+    fi
+  }
 fi
 
 # Wait + auto-approve any new SPLs
