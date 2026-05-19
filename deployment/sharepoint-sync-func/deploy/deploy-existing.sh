@@ -1,6 +1,6 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────────────────────
-# Deploy sync code to an existing Azure Function App and/or ACA Job.
+# Deploy sync code to an existing Azure Function App and/or ACA Job (.NET 10).
 # Updates app settings + publishes code / rebuilds container image.
 #
 # Usage:  TARGET={func|aca|both}  ./deploy-existing.sh
@@ -27,6 +27,7 @@ esac
 SUBSCRIPTION_ID="${SUBSCRIPTION_ID:-}"
 RESOURCE_GROUP="${RESOURCE_GROUP:-rg-sharepoint-sync}"
 TIMER_SCHEDULE="${TIMER_SCHEDULE:-0 0 2 * * *}"
+TIMER_SCHEDULE_FULL="${TIMER_SCHEDULE_FULL:-0 0 3 * * *}"
 
 FUNCTION_APP_NAME="${FUNCTION_APP_NAME:-}"
 ACA_JOB_NAME="${ACA_JOB_NAME:-}"
@@ -57,6 +58,7 @@ done
 
 command -v az >/dev/null 2>&1 || { echo "[ERROR] az CLI required" >&2; exit 1; }
 [[ "$TARGET" != "aca" ]] && {
+    command -v dotnet >/dev/null 2>&1 || { echo "[ERROR] dotnet SDK required" >&2; exit 1; }
     command -v func >/dev/null 2>&1 || { echo "[ERROR] func CLI required" >&2; exit 1; }
 }
 
@@ -81,6 +83,7 @@ APP_SETTINGS=(
     "DELETE_ORPHANED_BLOBS=${DELETE_ORPHANED_BLOBS:-false}"
     "DRY_RUN=${DRY_RUN:-false}"
     "SYNC_PERMISSIONS=${SYNC_PERMISSIONS:-false}"
+    "SYNC_PURVIEW_PROTECTION=${SYNC_PURVIEW_PROTECTION:-false}"
     "FORCE_FULL_SYNC=${FORCE_FULL_SYNC:-false}"
     "AZURE_CLIENT_ID=${AZURE_CLIENT_ID:-}"
     "AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET:-}"
@@ -108,12 +111,12 @@ if [[ "$TARGET" = "func" || "$TARGET" = "both" ]]; then
     echo "[INFO] Updating app settings"
     az functionapp config appsettings set \
         --name "$FUNCTION_APP_NAME" --resource-group "$RESOURCE_GROUP" \
-        --settings "${APP_SETTINGS[@]}" "TIMER_SCHEDULE=$TIMER_SCHEDULE" \
+        --settings "${APP_SETTINGS[@]}" "TIMER_SCHEDULE=$TIMER_SCHEDULE" "TIMER_SCHEDULE_FULL=$TIMER_SCHEDULE_FULL" \
         --output none
 
-    echo "[INFO] Publishing code"
+    echo "[INFO] Publishing code (.NET 10 isolated worker)"
     cd "$SYNC_DIR"
-    func azure functionapp publish "$FUNCTION_APP_NAME" --python
+    func azure functionapp publish "$FUNCTION_APP_NAME" --dotnet-isolated
 
     echo "[OK] Function App updated: $FUNCTION_APP_NAME"
 fi

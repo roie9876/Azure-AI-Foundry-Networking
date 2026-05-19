@@ -1,0 +1,93 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AzureFunctionsVersion>v4</AzureFunctionsVersion>
+    <OutputType>Exe</OutputType>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>SharePointSyncFunc</RootNamespace>
+    <AssemblyName>SharePointSyncFunc</AssemblyName>
+    <_FunctionsSkipCleanOutput>true</_FunctionsSkipCleanOutput>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Azure SDK -->
+    <PackageReference Include="Azure.Identity" Version="1.21.0" />
+    <PackageReference Include="Azure.Storage.Blobs" Version="12.27.0" />
+
+    <!-- Microsoft Graph -->
+    <PackageReference Include="Microsoft.Graph" Version="5.104.0" />
+
+    <!-- Azure Functions isolated worker -->
+    <PackageReference Include="Microsoft.Azure.Functions.Worker" Version="2.52.0" />
+    <PackageReference Include="Microsoft.Azure.Functions.Worker.Sdk" Version="2.0.7" />
+    <PackageReference Include="Microsoft.Azure.Functions.Worker.Extensions.Http" Version="3.3.0" />
+    <PackageReference Include="Microsoft.Azure.Functions.Worker.Extensions.Timer" Version="4.3.1" />
+
+    <!-- Application Insights bridge for the isolated worker. The deprecated
+         Microsoft.ApplicationInsights.WorkerService 2.22.0 (legacy AI 2.x SDK) is
+         intentionally NOT used. Microsoft.Azure.Functions.Worker.ApplicationInsights
+         alone forwards worker-side ILogger output through the Functions host's
+         Application Insights pipeline (host reads APPLICATIONINSIGHTS_CONNECTION_STRING). -->
+    <PackageReference Include="Microsoft.Azure.Functions.Worker.ApplicationInsights" Version="2.50.0" />
+
+    <!-- Pinned: Microsoft.Extensions.* aligned to the net10.0 LTS line.
+         Caching.Memory and Caching.Abstractions are listed explicitly to override
+         the legacy 1.0.0 transitive pulled in by
+         Microsoft.ApplicationInsights.PerfCounterCollector (an indirect dependency
+         of Microsoft.Azure.Functions.Worker.ApplicationInsights). -->
+    <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.7" />
+    <PackageReference Include="Microsoft.Extensions.Caching.Abstractions" Version="10.0.7" />
+    <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.7" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="host.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="local.settings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>Never</CopyToPublishDirectory>
+    </None>
+  </ItemGroup>
+
+  <!--
+    The Microsoft.Azure.Functions.Worker.Sdk auto-generates a sidecar project
+    at obj/<config>/<tfm>/WorkerExtensions/WorkerExtensions.csproj that pulls
+    Microsoft.NET.Sdk.Functions 4.6.0, which in turn drags in the legacy
+    Microsoft.Azure.WebJobs.Extensions 3.0.6 chain that REQUESTS Newtonsoft.Json
+    9.x / 10.0.1 / 10.0.2 / 11.0.2 in its dependency graph. Even though the
+    resolver picks 13.0.1 at runtime, vulnerability scanners read those
+    requested versions out of project.assets.json and flag CVE-2024-21907
+    (Newtonsoft.Json < 13.0.1 — DoS via deeply nested JSON).
+
+    The generated sidecar project explicitly disables Directory.Build.props /
+    Directory.Build.targets / Directory.Packages.props inheritance (see
+    _FunctionsExtensionCommonProps in Microsoft.Azure.Functions.Worker.Sdk.targets),
+    so we cannot pin via the normal mechanisms. Instead we hook between the
+    `_FunctionsGenerateCommon` target (which writes WorkerExtensions.csproj)
+    and `_WorkerExtensionsRestore` (which reads + restores it) and inject an
+    explicit <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    so the requested-version graph and the resolved version both land on the
+    patched Newtonsoft.Json line.
+  -->
+  <Target Name="_PinNewtonsoftJsonInWorkerExtensions"
+          AfterTargets="_FunctionsGenerateCommon"
+          BeforeTargets="_WorkerExtensionsRestore"
+          Condition="Exists('$(ExtensionsCsProj)')">
+    <PropertyGroup>
+      <_OriginalCsproj>$([System.IO.File]::ReadAllText($(ExtensionsCsProj)))</_OriginalCsproj>
+    </PropertyGroup>
+    <PropertyGroup Condition="!$(_OriginalCsproj.Contains('Newtonsoft.Json'))">
+      <_PinSnippet>&lt;PackageReference Include=&quot;Newtonsoft.Json&quot; Version=&quot;13.0.3&quot; /&gt;%0A    &lt;/ItemGroup&gt;</_PinSnippet>
+      <_PatchedCsproj>$(_OriginalCsproj.Replace('&lt;/ItemGroup&gt;', $(_PinSnippet)))</_PatchedCsproj>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(ExtensionsCsProj)"
+                      Lines="$(_PatchedCsproj)"
+                      Overwrite="true"
+                      Condition="'$(_PatchedCsproj)' != ''" />
+    <Message Importance="high"
+             Text="Pinned Newtonsoft.Json 13.0.3 in $(ExtensionsCsProj)"
+             Condition="'$(_PatchedCsproj)' != ''" />
+  </Target>
+</Project>

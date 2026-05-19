@@ -23,7 +23,8 @@ fi
 #
 # Assumes ALL infrastructure already exists:
 #   - Hub + Spoke VNet, subnets, UDR, firewall
-#   - Function App (Flex Consumption) with VNet integration + identity storage
+#   - Function App (.NET 10 isolated worker, Linux — Flex Consumption / EP /
+#     Consumption all supported) with VNet integration + identity storage
 #   - Function App storage account with private endpoints
 #   - Key Vault (RBAC-enabled, private)
 #   - Foundry storage account + blob container
@@ -1098,56 +1099,76 @@ else
 fi
 
 ###############################################################################
-# 8. Publish Sync Code
+# 8. Publish Sync Code (.NET 10 isolated worker)
 ###############################################################################
 echo "──── Step 8: Publishing Sync Code ────"
 
-if [ ! -f "$SYNC_SRC_DIR/host.json" ]; then
-  echo "  ❌ Vendored sync source not found at $SYNC_SRC_DIR"
-  echo "     Expected deployment/sharepoint-sync-func/host.json"
+if [ ! -f "$SYNC_SRC_DIR/SharePointSyncFunc.csproj" ]; then
+  echo "  ❌ Vendored .NET project not found at $SYNC_SRC_DIR"
+  echo "     Expected deployment/sharepoint-sync-func/SharePointSyncFunc.csproj"
+  echo "     (this script targets the .NET 10 isolated worker build of the sync"
+  echo "      function — the Python source has been removed.)"
   exit 1
 fi
 
 FUNC_SRC_DIR="$SYNC_SRC_DIR"
-echo "  Source: $FUNC_SRC_DIR (vendored)"
+echo "  Source:        $FUNC_SRC_DIR (vendored, .NET 10 isolated)"
 
-# Remove Oryx settings that break Flex deploy
+# Require dotnet SDK
+if ! command -v dotnet >/dev/null 2>&1; then
+  echo "  ❌ dotnet SDK is required to build the .NET 10 Function App."
+  echo "     Install: https://learn.microsoft.com/dotnet/core/install/"
+  exit 1
+fi
+DOTNET_VER=$(dotnet --version 2>/dev/null || echo "?")
+echo "  dotnet SDK:    $DOTNET_VER"
+
+# Verify the customer's Function App is actually .NET 10 isolated.
+FUNC_LINUX_FX=$(az functionapp config show -g "$SPOKE_RG" -n "$FUNC_APP_NAME" \
+  --query "linuxFxVersion" -o tsv 2>/dev/null || echo "")
+FUNC_WORKER_RT=$(az functionapp config appsettings list -g "$SPOKE_RG" -n "$FUNC_APP_NAME" \
+  --query "[?name=='FUNCTIONS_WORKER_RUNTIME'].value | [0]" -o tsv 2>/dev/null || echo "")
+echo "  FA linuxFxVersion:        ${FUNC_LINUX_FX:-<unset>}"
+echo "  FA FUNCTIONS_WORKER_RUNTIME: ${FUNC_WORKER_RT:-<unset>}"
+
+if [ -n "$FUNC_WORKER_RT" ] && ! echo "$FUNC_WORKER_RT" | grep -qi "dotnet-isolated"; then
+  echo ""
+  echo "  ⚠️  Function App FUNCTIONS_WORKER_RUNTIME='${FUNC_WORKER_RT}', expected 'dotnet-isolated'."
+  echo "     This script publishes a .NET 10 isolated worker — runtime stack must match."
+  echo "     Either recreate the FA with --runtime dotnet-isolated --runtime-version 10.0,"
+  echo "     or set FORCE_PUBLISH=1 to attempt the publish anyway."
+  if [ "${FORCE_PUBLISH:-0}" != "1" ]; then
+    exit 1
+  fi
+  echo "     FORCE_PUBLISH=1 set — continuing."
+fi
+
+# Remove stale build-flag settings that interfere with prebuilt .NET publish.
 az functionapp config appsettings delete \
   --name "$FUNC_APP_NAME" -g "$SPOKE_RG" \
   --setting-names SCM_DO_BUILD_DURING_DEPLOYMENT ENABLE_ORYX_BUILD \
   --output none 2>/dev/null || true
 
-# Stage deploy package with pre-built Linux/amd64 wheels
-PKG_DIR=$(mktemp -d -t sp-sync-pkg-XXXX)
-cp -R "$FUNC_SRC_DIR"/. "$PKG_DIR"/
-rm -rf "$PKG_DIR/.venv" "$PKG_DIR/__pycache__" 2>/dev/null || true
-find "$PKG_DIR" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
-find "$PKG_DIR" -name "*.pyc" -delete 2>/dev/null || true
-
-if [ -f "$PKG_DIR/requirements.txt" ]; then
-  echo "  Building Python wheels in Linux/amd64 container..."
-  if ! command -v docker >/dev/null 2>&1; then
-    echo "  ❌ Docker is required to build Linux/amd64 wheels on macOS/Windows."
-    exit 1
-  fi
-  docker run --rm --platform linux/amd64 \
-    -v "$PKG_DIR":/work -w /work \
-    mcr.microsoft.com/azure-functions/python:4-python3.11 \
-    bash -lc "pip install --upgrade pip >/dev/null && pip install --target=.python_packages/lib/site-packages -r requirements.txt"
-  echo "  ✅ Wheels staged"
+# Build & publish .NET project to a staging dir.
+PKG_DIR=$(mktemp -d -t sp-sync-pub-XXXX)
+echo "  Publishing to: $PKG_DIR"
+if ! dotnet publish "$FUNC_SRC_DIR/SharePointSyncFunc.csproj" \
+      -c Release -o "$PKG_DIR" \
+      /p:UseAppHost=false \
+      --nologo -v minimal 2>/tmp/pub-err.txt; then
+  echo "  ❌ dotnet publish failed:"
+  head -c 2000 /tmp/pub-err.txt
+  exit 1
 fi
+echo "  ✅ dotnet publish complete"
 
 DEPLOY_ZIP="/tmp/sp-sync-deploy-$$.zip"
-(cd "$PKG_DIR" && zip -rq "$DEPLOY_ZIP" . -x "*.pyc" "*/__pycache__/*" ".git/*" ".env" ".venv/*")
+(cd "$PKG_DIR" && zip -rq "$DEPLOY_ZIP" . -x ".git/*" ".env")
 echo "  Zip size: $(du -h "$DEPLOY_ZIP" | cut -f1)"
 
-# Detect Function App SKU. Flex Consumption uses a different deployment API
-# (OneDeploy via /api/publish?type=zip, NOT the classic Kudu /api/publish),
-# and the safest cross-SKU path is `az functionapp deployment source config-zip`,
-# which inspects the SKU and chooses the right endpoint.
+# Detect Function App SKU (Flex vs Consumption/EP) — affects /api/publish flags.
 FUNC_SKU=$(az functionapp show -g "$SPOKE_RG" -n "$FUNC_APP_NAME" \
   --query "[properties.sku, sku]" -o tsv 2>/dev/null | tr -d '\r\n\t' || true)
-# Some SKUs only expose it via the plan; the kind alone is enough to detect Flex.
 FUNC_KIND=$(az functionapp show -g "$SPOKE_RG" -n "$FUNC_APP_NAME" --query "kind" -o tsv 2>/dev/null || true)
 IS_FLEX=0
 if echo "${FUNC_SKU}${FUNC_KIND}" | grep -qi "flex"; then
@@ -1158,24 +1179,61 @@ echo "  Function App kind: $FUNC_KIND (Flex=$IS_FLEX)"
 PUBLISH_OK=0
 PUBLISH_LAST_ERR=""
 
-# Primary path: use az CLI, which speaks the right deployment API per SKU
-# (OneDeploy for Flex, classic Kudu /api/publish for Consumption/Premium).
-for ATTEMPT in 1 2 3; do
-  echo "  Publish attempt $ATTEMPT/3 (az functionapp deployment source config-zip)..."
-  if az functionapp deployment source config-zip \
-      -g "$SPOKE_RG" -n "$FUNC_APP_NAME" \
-      --src "$DEPLOY_ZIP" \
-      --build-remote false \
-      --timeout 900 \
-      --output none 2>/tmp/pub-err.txt; then
-    echo "  ✅ Accepted"
+# Primary path: SCM /api/publish with the prebuilt zip, using an ARM bearer
+# token. Works for Linux EP / Consumption / Flex once the zip already
+# contains the built artifact (RemoteBuild=false). Equivalent to what the
+# eli-tectika reference script does.
+SCM_HOST="${FUNC_APP_NAME}.scm.azurewebsites.net"
+ARM_TOKEN=$(az account get-access-token --resource https://management.azure.com/ \
+  --query accessToken -o tsv 2>/dev/null || echo "")
+if [ -z "$ARM_TOKEN" ]; then
+  echo "  ❌ Could not obtain ARM access token (az login required)."
+  exit 1
+fi
+
+for ATTEMPT in 1 2 3 4 5; do
+  echo "  Publish attempt $ATTEMPT/5 (POST https://${SCM_HOST}/api/publish?RemoteBuild=false&Deployer=az_cli)..."
+  HTTP_CODE=$(curl -sS -o /tmp/pub-resp.txt -w "%{http_code}" \
+    --max-time 900 \
+    -X POST "https://${SCM_HOST}/api/publish?RemoteBuild=false&Deployer=az_cli" \
+    -H "Authorization: Bearer $ARM_TOKEN" \
+    -H "Content-Type: application/zip" \
+    --data-binary "@${DEPLOY_ZIP}" 2>/tmp/pub-err.txt || echo "000")
+
+  if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "202" ] || [ "$HTTP_CODE" = "201" ]; then
+    echo "  ✅ Accepted (HTTP $HTTP_CODE)"
     PUBLISH_OK=1
     break
   fi
-  PUBLISH_LAST_ERR=$(head -c 600 /tmp/pub-err.txt 2>/dev/null || echo "")
+
+  PUBLISH_LAST_ERR="HTTP $HTTP_CODE — $(head -c 500 /tmp/pub-resp.txt 2>/dev/null)"
   echo "  ⚠️  $PUBLISH_LAST_ERR"
-  [ "$ATTEMPT" -lt 3 ] && sleep 20
+  [ "$ATTEMPT" -lt 5 ] && sleep 30
 done
+
+# Backup path: try az CLI's deployment API (uses OneDeploy for Flex, classic
+# Kudu for EP). Useful if /api/publish hits a private-endpoint or proxy quirk
+# but az CLI's tunnel works.
+if [ "$PUBLISH_OK" != "1" ]; then
+  echo ""
+  echo "  /api/publish failed. Trying az functionapp deployment source config-zip..."
+  for ATTEMPT in 1 2; do
+    echo "  az CLI attempt $ATTEMPT/2..."
+    if az functionapp deployment source config-zip \
+        -g "$SPOKE_RG" -n "$FUNC_APP_NAME" \
+        --src "$DEPLOY_ZIP" \
+        --build-remote false \
+        --timeout 900 \
+        --output none 2>/tmp/pub-err.txt; then
+      echo "  ✅ Accepted (az CLI)"
+      PUBLISH_OK=1
+      break
+    fi
+    PUBLISH_LAST_ERR=$(head -c 600 /tmp/pub-err.txt 2>/dev/null || echo "")
+    echo "  ⚠️  $PUBLISH_LAST_ERR"
+    [ "$ATTEMPT" -lt 2 ] && sleep 20
+  done
+fi
 
 # Fallback path: blob-based Run-From-Package. This is the most reliable deploy
 # method for locked-down apps where Kudu's SCM /api/publish controller is

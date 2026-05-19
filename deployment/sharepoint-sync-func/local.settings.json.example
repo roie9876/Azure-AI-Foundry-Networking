@@ -1,0 +1,37 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated",
+    "TIMER_SCHEDULE": "0 0 * * * *",
+    "TIMER_SCHEDULE_FULL": "0 0 3 * * *",
+
+    "SHAREPOINT_SITE_URL": "https://contoso.sharepoint.com/sites/MySite",
+    "SHAREPOINT_DRIVE_NAME": "Documents",
+    "SHAREPOINT_FOLDER_PATH": "/",
+    "SHAREPOINT_INCLUDE_EXTENSIONS": "",
+    "SHAREPOINT_EXCLUDE_EXTENSIONS": "",
+
+    "AZURE_STORAGE_ACCOUNT_NAME": "mystorageaccount",
+    "AZURE_BLOB_CONTAINER_NAME": "sharepoint-sync",
+    "AZURE_BLOB_PREFIX": "",
+
+    "DELETE_ORPHANED_BLOBS": "false",
+    "SOFT_DELETE_ORPHANED_BLOBS": "true",
+    "DRY_RUN": "false",
+    "FORCE_FULL_SYNC": "false",
+
+    "PERMISSIONS_DELTA_MODE": "hash",
+    "DELTA_TOKEN_STORAGE_PATH": ".delta_tokens",
+    "SYNC_PERMISSIONS": "false",
+    "SYNC_PURVIEW_PROTECTION": "false",
+
+    "AZURE_CLIENT_ID": "",
+    "AZURE_CLIENT_SECRET": "",
+    "AZURE_TENANT_ID": "",
+
+    "AZURE_STORAGE_CLIENT_ID": "",
+    "AZURE_STORAGE_CLIENT_SECRET": "",
+    "AZURE_STORAGE_TENANT_ID": ""
+  }
+}
