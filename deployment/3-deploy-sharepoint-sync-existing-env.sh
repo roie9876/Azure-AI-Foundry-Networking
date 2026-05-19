@@ -137,7 +137,10 @@ SP_CLIENT_ID="$AZURE_CLIENT_ID"
 SP_CLIENT_SECRET="$AZURE_CLIENT_SECRET"
 SP_SITE_URL="$SHAREPOINT_SITE_URL"
 BLOB_CONTAINER_NAME="$AZURE_BLOB_CONTAINER_NAME"
-SEARCH_ACCESS_MODE="${SEARCH_ACCESS_MODE:-toggle-public}"
+# Default to 'private' for existing-env variant: the customer's network is locked
+# down by definition; we should NOT toggle public access on AI Search without an
+# explicit opt-in. Operator must run this script from inside the VNet (VPN/Bastion).
+SEARCH_ACCESS_MODE="${SEARCH_ACCESS_MODE:-private}"
 
 SYNC_SRC_DIR="${SCRIPT_DIR}/sharepoint-sync-func"
 
@@ -667,6 +670,14 @@ if [ "$SEARCH_ACCESS_MODE" = "private" ]; then
   fi
   echo "  ✅ Private endpoint reachable."
 else
+  echo "  ⚠️  SEARCH_ACCESS_MODE=toggle-public — will temporarily enable AI Search public access."
+  echo "     This may violate the customer's network policy. Prefer SEARCH_ACCESS_MODE=private"
+  echo "     and run this script from inside the VNet (VPN/Bastion)."
+  read -r -p "     Continue and toggle public access? [y/N]: " CONFIRM_TOGGLE
+  if [[ ! "$CONFIRM_TOGGLE" =~ ^[Yy]$ ]]; then
+    echo "  Aborted by operator. Re-run with SEARCH_ACCESS_MODE=private from inside the VNet."
+    exit 1
+  fi
   echo "  Temporarily enabling AI Search public access..."
   if ! az search service update --name "$AI_SEARCH_NAME" --resource-group "$SPOKE_RG" \
       --public-access enabled --output none 2>/tmp/search-toggle.err; then
