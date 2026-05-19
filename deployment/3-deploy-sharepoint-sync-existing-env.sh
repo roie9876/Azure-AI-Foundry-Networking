@@ -1179,60 +1179,81 @@ echo "  Function App kind: $FUNC_KIND (Flex=$IS_FLEX)"
 PUBLISH_OK=0
 PUBLISH_LAST_ERR=""
 
-# Primary path: SCM /api/publish with the prebuilt zip, using an ARM bearer
-# token. Works for Linux EP / Consumption / Flex once the zip already
-# contains the built artifact (RemoteBuild=false). Equivalent to what the
-# eli-tectika reference script does.
-SCM_HOST="${FUNC_APP_NAME}.scm.azurewebsites.net"
-ARM_TOKEN=$(az account get-access-token --resource https://management.azure.com/ \
-  --query accessToken -o tsv 2>/dev/null || echo "")
-if [ -z "$ARM_TOKEN" ]; then
-  echo "  ❌ Could not obtain ARM access token (az login required)."
-  exit 1
-fi
-
-for ATTEMPT in 1 2 3 4 5; do
-  echo "  Publish attempt $ATTEMPT/5 (POST https://${SCM_HOST}/api/publish?RemoteBuild=false&Deployer=az_cli)..."
-  HTTP_CODE=$(curl -sS -o /tmp/pub-resp.txt -w "%{http_code}" \
-    --max-time 900 \
-    -X POST "https://${SCM_HOST}/api/publish?RemoteBuild=false&Deployer=az_cli" \
-    -H "Authorization: Bearer $ARM_TOKEN" \
-    -H "Content-Type: application/zip" \
-    --data-binary "@${DEPLOY_ZIP}" 2>/tmp/pub-err.txt || echo "000")
-
-  if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "202" ] || [ "$HTTP_CODE" = "201" ]; then
-    echo "  ✅ Accepted (HTTP $HTTP_CODE)"
+# Primary path: az CLI's deployment API.
+#
+# Why az CLI first (and not the raw curl /api/publish that the eli-tectika
+# script uses): az CLI is a Python program and honors WinHTTP / system proxy
+# settings out of the box. Customers in corporate environments (forced web
+# proxy, TLS interception, restricted egress) routinely have working az but
+# a curl that gets HTTP 000 (connection refused / TLS handshake failure /
+# proxy required). az also retries internally and handles SCM's quirks across
+# Flex / EP / Consumption.
+for ATTEMPT in 1 2 3; do
+  echo "  Publish attempt $ATTEMPT/3 (az functionapp deployment source config-zip)..."
+  if az functionapp deployment source config-zip \
+      -g "$SPOKE_RG" -n "$FUNC_APP_NAME" \
+      --src "$DEPLOY_ZIP" \
+      --build-remote false \
+      --timeout 900 \
+      --output none 2>/tmp/pub-err.txt; then
+    echo "  ✅ Accepted (az CLI)"
     PUBLISH_OK=1
     break
   fi
-
-  PUBLISH_LAST_ERR="HTTP $HTTP_CODE — $(head -c 500 /tmp/pub-resp.txt 2>/dev/null)"
+  PUBLISH_LAST_ERR=$(head -c 600 /tmp/pub-err.txt 2>/dev/null || echo "")
   echo "  ⚠️  $PUBLISH_LAST_ERR"
-  [ "$ATTEMPT" -lt 5 ] && sleep 30
+  [ "$ATTEMPT" -lt 3 ] && sleep 20
 done
 
-# Backup path: try az CLI's deployment API (uses OneDeploy for Flex, classic
-# Kudu for EP). Useful if /api/publish hits a private-endpoint or proxy quirk
-# but az CLI's tunnel works.
+# Backup path: raw POST to SCM /api/publish with an ARM bearer token. Useful
+# when az CLI gets a transient failure but the underlying endpoint works.
+# Skipped immediately on HTTP 000 (no point retrying network errors).
 if [ "$PUBLISH_OK" != "1" ]; then
   echo ""
-  echo "  /api/publish failed. Trying az functionapp deployment source config-zip..."
-  for ATTEMPT in 1 2; do
-    echo "  az CLI attempt $ATTEMPT/2..."
-    if az functionapp deployment source config-zip \
-        -g "$SPOKE_RG" -n "$FUNC_APP_NAME" \
-        --src "$DEPLOY_ZIP" \
-        --build-remote false \
-        --timeout 900 \
-        --output none 2>/tmp/pub-err.txt; then
-      echo "  ✅ Accepted (az CLI)"
-      PUBLISH_OK=1
-      break
+  echo "  az CLI publish failed. Trying raw SCM /api/publish..."
+  SCM_HOST="${FUNC_APP_NAME}.scm.azurewebsites.net"
+  ARM_TOKEN=$(az account get-access-token --resource https://management.azure.com/ \
+    --query accessToken -o tsv 2>/dev/null || echo "")
+  if [ -z "$ARM_TOKEN" ]; then
+    echo "  ⚠️  Could not obtain ARM access token — skipping SCM curl path."
+  else
+    # Hint corporate-proxy users.
+    if [ -n "${HTTPS_PROXY:-}${HTTP_PROXY:-}${https_proxy:-}${http_proxy:-}" ]; then
+      echo "  (using proxy from HTTPS_PROXY/HTTP_PROXY env var)"
     fi
-    PUBLISH_LAST_ERR=$(head -c 600 /tmp/pub-err.txt 2>/dev/null || echo "")
-    echo "  ⚠️  $PUBLISH_LAST_ERR"
-    [ "$ATTEMPT" -lt 2 ] && sleep 20
-  done
+
+    for ATTEMPT in 1 2 3; do
+      echo "  curl attempt $ATTEMPT/3 (POST https://${SCM_HOST}/api/publish?RemoteBuild=false&Deployer=az_cli)..."
+      # Capture http_code and curl exit code separately. Without this, a
+      # failed curl writes "000" to stdout AND `|| echo "000"` fires, yielding
+      # "000000" which never matches "200/202/201".
+      HTTP_CODE=$(curl -sS -o /tmp/pub-resp.txt -w "%{http_code}" \
+        --max-time 900 \
+        -X POST "https://${SCM_HOST}/api/publish?RemoteBuild=false&Deployer=az_cli" \
+        -H "Authorization: Bearer $ARM_TOKEN" \
+        -H "Content-Type: application/zip" \
+        --data-binary "@${DEPLOY_ZIP}" 2>/tmp/pub-err.txt) || HTTP_CODE="000"
+
+      if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "202" ] || [ "$HTTP_CODE" = "201" ]; then
+        echo "  ✅ Accepted (HTTP $HTTP_CODE)"
+        PUBLISH_OK=1
+        break
+      fi
+
+      PUBLISH_LAST_ERR="HTTP $HTTP_CODE — $(head -c 500 /tmp/pub-resp.txt 2>/dev/null)$(head -c 200 /tmp/pub-err.txt 2>/dev/null)"
+      echo "  ⚠️  $PUBLISH_LAST_ERR"
+
+      # HTTP 000 = curl couldn't reach the endpoint at all (DNS/TCP/TLS/proxy).
+      # No point retrying — go straight to the blob fallback.
+      if [ "$HTTP_CODE" = "000" ]; then
+        echo "  (curl could not reach SCM endpoint — likely corporate proxy"
+        echo "   or private-endpoint-only. Skipping to blob fallback.)"
+        break
+      fi
+
+      [ "$ATTEMPT" -lt 3 ] && sleep 30
+    done
+  fi
 fi
 
 # Fallback path: blob-based Run-From-Package. This is the most reliable deploy
