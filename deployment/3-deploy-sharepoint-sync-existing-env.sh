@@ -1348,11 +1348,27 @@ if [ "$PUBLISH_OK" != "1" ]; then
   fi
   if [ -z "$TIMEOUT_BIN" ]; then
     echo "  ⚠️  GNU 'timeout' not found — storage commands will run without a wall-clock cap."
-    _stg() { "$@"; }
+    _stg() {
+      # Clear HTTP(S) proxy for blob data-plane calls. The corp proxy
+      # commonly intercepts ARM fine but mangles *.blob.core.windows.net
+      # TLS → EOF. Bypass it for storage. Set STG_KEEP_PROXY=1 to disable.
+      if [ "${STG_KEEP_PROXY:-0}" = "1" ]; then
+        "$@"
+      else
+        env -u HTTPS_PROXY -u HTTP_PROXY -u https_proxy -u http_proxy "$@"
+      fi
+    }
   else
     # Use SIGTERM, then SIGKILL after 5s if process is wedged. Exit code 124
     # means the timeout fired.
-    _stg() { "$TIMEOUT_BIN" --kill-after=5 "$1" "${@:2}"; }
+    _stg() {
+      if [ "${STG_KEEP_PROXY:-0}" = "1" ]; then
+        "$TIMEOUT_BIN" --kill-after=5 "$1" "${@:2}"
+      else
+        env -u HTTPS_PROXY -u HTTP_PROXY -u https_proxy -u http_proxy \
+          "$TIMEOUT_BIN" --kill-after=5 "$1" "${@:2}"
+      fi
+    }
   fi
 
   is_tls_proxy_error() {
