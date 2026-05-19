@@ -1142,6 +1142,16 @@ DEPLOY_ZIP="/tmp/sp-sync-deploy-$$.zip"
 echo "  Zip size: $(du -h "$DEPLOY_ZIP" | cut -f1)"
 
 SCM_HOST="${FUNC_APP_NAME}.scm.azurewebsites.net"
+# Flex Consumption Function Apps get a randomized hostname suffix
+# (e.g. fu-foo-01-hsaya4b9dedxf2ff.swedencentral-01.azurewebsites.net), so the
+# default <name>.scm.azurewebsites.net does NOT resolve. Pull the real SCM
+# hostname from enabledHostNames and prefer it if found.
+SCM_HOST_DISCOVERED=$(az functionapp show -g "$SPOKE_RG" -n "$FUNC_APP_NAME" \
+  --query "enabledHostNames[?contains(@, '.scm.')] | [0]" -o tsv 2>/dev/null || true)
+if [ -n "$SCM_HOST_DISCOVERED" ] && [ "$SCM_HOST_DISCOVERED" != "None" ]; then
+  SCM_HOST="$SCM_HOST_DISCOVERED"
+  echo "  SCM host: $SCM_HOST"
+fi
 ARM_TOKEN=$(az account get-access-token --resource https://management.azure.com/ --query accessToken -o tsv)
 
 PUBLISH_OK=0
