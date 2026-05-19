@@ -1295,108 +1295,259 @@ if [ "$PUBLISH_OK" != "1" ]; then
   echo "  Container:       $RFP_CONTAINER"
   echo "  Blob:            $RFP_BLOB"
 
-  # Auth strategy: prefer AAD (--auth-mode login) over account keys.
+  # Three deploy paths, picked automatically:
   #
-  # Many enterprises (Clal among them) revoke 'Microsoft.Storage/.../listKeys'
-  # from developers as policy, while still granting them 'Storage Blob Data
-  # Contributor' on the data plane. AAD auth works in that case; account-key
-  # auth does NOT. We try AAD first and fall back to account key only if AAD
-  # is unavailable (rare — typically only on legacy SAs with AAD disabled).
-  STG_AUTH_MODE="login"
-  STG_AUTH_ARGS=(--auth-mode login)
+  #   A) AAD + SAS (default): upload via 'az storage' with --auth-mode login,
+  #      generate a user-delegation SAS, set WEBSITE_RUN_FROM_PACKAGE=<url+sas>.
+  #      Works when the workstation can reach *.blob.core.windows.net.
+  #
+  #   B) Account-key + SAS (fallback): same as A but with account keys, for
+  #      legacy SAs where AAD data-plane auth is disabled.
+  #
+  #   C) Manual upload + Managed-Identity fetch (corp-proxy fallback): if A
+  #      and B both fail with TLS/SSL errors (corp proxy blocks blob endpoint
+  #      while still allowing ARM through), we ask the user to upload the
+  #      zip via the Azure Portal (which uses a different egress path), then
+  #      configure the Function App's system-assigned managed identity to
+  #      fetch the package directly. No SAS rotation, no key required.
+  #
+  # All three paths end with PKG_URL + the right app settings.
 
-  # Probe AAD access by attempting to create the container. Idempotent.
-  if ! az storage container create \
-        --account-name "$RFP_STORAGE" "${STG_AUTH_ARGS[@]}" \
-        --name "$RFP_CONTAINER" --output none 2>/tmp/stg-err.txt; then
-    echo "  ⚠️  AAD container create failed:"
-    head -c 400 /tmp/stg-err.txt 2>/dev/null
-    echo ""
-    echo "  Trying account-key fallback..."
-    STG_KEY=$(az storage account keys list -g "$SPOKE_RG" -n "$RFP_STORAGE" \
-      --query "[0].value" -o tsv 2>/tmp/stg-err.txt || true)
-    if [ -z "$STG_KEY" ]; then
-      echo "  ❌ Cannot deploy: neither AAD nor account-key access works."
-      echo ""
-      echo "     Caller: $(az account show --query user.name -o tsv 2>/dev/null)"
-      echo ""
-      echo "     Required (ONE of):"
-      echo "       - 'Storage Blob Data Contributor' on $RFP_STORAGE (preferred), or"
-      echo "       - 'Storage Account Key Operator' on $RFP_STORAGE."
-      echo ""
-      echo "     listKeys error:"
-      head -c 300 /tmp/stg-err.txt 2>/dev/null | sed 's/^/       /'
-      exit 1
+  STG_AUTH_MODE=""
+  PROXY_TLS_BLOCKED=0
+  MANUAL_UPLOAD="${MANUAL_UPLOAD:-0}"
+
+  is_tls_proxy_error() {
+    # Detect the corp-proxy-mangling-blob-TLS signature
+    grep -qE 'UNEXPECTED_EOF_WHILE_READING|EOF occurred in violation|SSL.*handshake|certificate verify failed|Connection.*timed.*out|Connection reset by peer|Unable to connect' "$1" 2>/dev/null
+  }
+
+  if [ "$MANUAL_UPLOAD" = "1" ]; then
+    echo "  📦 MANUAL_UPLOAD=1 — skipping automated upload, will prompt for portal upload."
+    PROXY_TLS_BLOCKED=1
+  else
+    # ── Path A: AAD ─────────────────────────────────────────────────────
+    if az storage container create \
+         --account-name "$RFP_STORAGE" --auth-mode login \
+         --name "$RFP_CONTAINER" --output none 2>/tmp/stg-err.txt; then
+      STG_AUTH_MODE="login"
+    else
+      echo "  ⚠️  AAD container create failed:"
+      head -c 400 /tmp/stg-err.txt 2>/dev/null; echo ""
+      if is_tls_proxy_error /tmp/stg-err.txt; then
+        echo "  💡 Detected corporate proxy blocking *.blob.core.windows.net TLS."
+        echo "     ARM (management.azure.com) works through your proxy, but blob"
+        echo "     data-plane endpoints do not. Switching to MANUAL UPLOAD mode."
+        PROXY_TLS_BLOCKED=1
+      else
+        # ── Path B: account key ─────────────────────────────────────────
+        echo "  Trying account-key fallback..."
+        STG_KEY=$(az storage account keys list -g "$SPOKE_RG" -n "$RFP_STORAGE" \
+          --query "[0].value" -o tsv 2>/tmp/stg-err.txt || true)
+        if [ -n "$STG_KEY" ] && az storage container create \
+              --account-name "$RFP_STORAGE" --account-key "$STG_KEY" \
+              --name "$RFP_CONTAINER" --output none 2>/tmp/stg-err.txt; then
+          STG_AUTH_MODE="key"
+        elif is_tls_proxy_error /tmp/stg-err.txt; then
+          echo "  💡 Account-key path also hit proxy TLS error. Switching to MANUAL UPLOAD."
+          PROXY_TLS_BLOCKED=1
+        else
+          echo "  ❌ Cannot deploy: neither AAD nor account-key access works."
+          echo ""
+          echo "     Caller: $(az account show --query user.name -o tsv 2>/dev/null)"
+          echo ""
+          echo "     Required (ONE of):"
+          echo "       - 'Storage Blob Data Contributor' on $RFP_STORAGE (preferred), or"
+          echo "       - 'Storage Account Key Operator' on $RFP_STORAGE."
+          echo ""
+          echo "     Last error:"
+          head -c 300 /tmp/stg-err.txt 2>/dev/null | sed 's/^/       /'
+          echo ""
+          echo "     If your workstation cannot reach blob endpoints at all, re-run with:"
+          echo "       MANUAL_UPLOAD=1 bash $0 <env-file>"
+          exit 1
+        fi
+      fi
     fi
-    STG_AUTH_MODE="key"
-    STG_AUTH_ARGS=(--account-key "$STG_KEY")
-    # Retry container create with key auth.
-    az storage container create \
-      --account-name "$RFP_STORAGE" "${STG_AUTH_ARGS[@]}" \
-      --name "$RFP_CONTAINER" --output none 2>/tmp/stg-err.txt || {
-        echo "  ❌ Container create failed even with account key:"
+  fi
+
+  if [ "$PROXY_TLS_BLOCKED" != "1" ]; then
+    # ── Automated upload (Path A or B) ────────────────────────────────────
+    echo "  Storage auth mode: $STG_AUTH_MODE"
+    if [ "$STG_AUTH_MODE" = "login" ]; then
+      STG_AUTH_ARGS=(--auth-mode login)
+    else
+      STG_AUTH_ARGS=(--account-key "$STG_KEY")
+    fi
+
+    echo "  Uploading $(du -h "$DEPLOY_ZIP" | cut -f1) zip to blob storage..."
+    if ! az storage blob upload \
+          --account-name "$RFP_STORAGE" "${STG_AUTH_ARGS[@]}" \
+          --container-name "$RFP_CONTAINER" --name "$RFP_BLOB" \
+          --file "$DEPLOY_ZIP" --overwrite --output none 2>/tmp/stg-err.txt; then
+      if is_tls_proxy_error /tmp/stg-err.txt; then
+        echo "  💡 Upload hit proxy TLS error. Falling back to MANUAL UPLOAD."
+        PROXY_TLS_BLOCKED=1
+      else
+        echo "  ❌ Blob upload failed:"
         head -c 400 /tmp/stg-err.txt 2>/dev/null
         exit 1
-      }
-  fi
-  echo "  Storage auth mode: $STG_AUTH_MODE"
-
-  echo "  Uploading $(du -h "$DEPLOY_ZIP" | cut -f1) zip to blob storage..."
-  if ! az storage blob upload \
-        --account-name "$RFP_STORAGE" "${STG_AUTH_ARGS[@]}" \
-        --container-name "$RFP_CONTAINER" --name "$RFP_BLOB" \
-        --file "$DEPLOY_ZIP" --overwrite --output none 2>/tmp/stg-err.txt; then
-    echo "  ❌ Blob upload failed:"
-    head -c 400 /tmp/stg-err.txt 2>/dev/null
-    exit 1
-  fi
-
-  # Generate read-only SAS for the package URL.
-  #   - With AAD auth: user-delegation SAS (UDK). Max lifetime is 7 days per
-  #     Azure policy, but the FA caches the package locally after first
-  #     download, so cold starts within the 7-day window work fine. Every
-  #     re-run of this script mints a fresh SAS, extending the window.
-  #     Requires the caller to have 'generateUserDelegationKey' (included in
-  #     Storage Blob Data Contributor).
-  #   - With account-key auth: account SAS, 10-year expiry (legacy path).
-  if [ "$STG_AUTH_MODE" = "login" ]; then
-    # UDK SAS — max 7 days, use 6d23h to leave a safety margin.
-    SAS_EXPIRY=$(date -u -v+6d -v+23H +%Y-%m-%dT%H:%MZ 2>/dev/null || \
-                 date -u -d '+6 days 23 hours' +%Y-%m-%dT%H:%MZ 2>/dev/null || \
-                 date -u -d '+167 hours' +%Y-%m-%dT%H:%MZ)
-    SAS=$(az storage blob generate-sas \
-      --account-name "$RFP_STORAGE" --auth-mode login --as-user \
-      --container-name "$RFP_CONTAINER" --name "$RFP_BLOB" \
-      --permissions r --expiry "$SAS_EXPIRY" --https-only -o tsv 2>/tmp/stg-err.txt)
-  else
-    SAS_EXPIRY=$(date -u -v+10y +%Y-%m-%dT%H:%MZ 2>/dev/null || \
-                 date -u -d '+10 years' +%Y-%m-%dT%H:%MZ 2>/dev/null || \
-                 date -u -d '+3650 days' +%Y-%m-%dT%H:%MZ)
-    SAS=$(az storage blob generate-sas \
-      --account-name "$RFP_STORAGE" --account-key "$STG_KEY" \
-      --container-name "$RFP_CONTAINER" --name "$RFP_BLOB" \
-      --permissions r --expiry "$SAS_EXPIRY" --https-only -o tsv 2>/tmp/stg-err.txt)
-  fi
-  if [ -z "$SAS" ]; then
-    echo "  ❌ Could not generate SAS:"
-    head -c 400 /tmp/stg-err.txt 2>/dev/null
-    if [ "$STG_AUTH_MODE" = "login" ]; then
-      echo ""
-      echo "     User-delegation SAS requires 'Storage Blob Delegator' or"
-      echo "     'Storage Blob Data Contributor' on $RFP_STORAGE."
+      fi
     fi
-    exit 1
   fi
 
-  # Build the blob URL. Use the private-DNS-resolvable .blob.core.windows.net
-  # hostname so the FA fetches via its VNet integration / private endpoint.
-  PKG_URL="https://${RFP_STORAGE}.blob.core.windows.net/${RFP_CONTAINER}/${RFP_BLOB}?${SAS}"
+  if [ "$PROXY_TLS_BLOCKED" != "1" ]; then
+    # ── Generate SAS (Path A: UDK; Path B: account SAS) ──────────────────
+    if [ "$STG_AUTH_MODE" = "login" ]; then
+      SAS_EXPIRY=$(date -u -v+6d -v+23H +%Y-%m-%dT%H:%MZ 2>/dev/null || \
+                   date -u -d '+6 days 23 hours' +%Y-%m-%dT%H:%MZ 2>/dev/null || \
+                   date -u -d '+167 hours' +%Y-%m-%dT%H:%MZ)
+      SAS=$(az storage blob generate-sas \
+        --account-name "$RFP_STORAGE" --auth-mode login --as-user \
+        --container-name "$RFP_CONTAINER" --name "$RFP_BLOB" \
+        --permissions r --expiry "$SAS_EXPIRY" --https-only -o tsv 2>/tmp/stg-err.txt)
+    else
+      SAS_EXPIRY=$(date -u -v+10y +%Y-%m-%dT%H:%MZ 2>/dev/null || \
+                   date -u -d '+10 years' +%Y-%m-%dT%H:%MZ 2>/dev/null || \
+                   date -u -d '+3650 days' +%Y-%m-%dT%H:%MZ)
+      SAS=$(az storage blob generate-sas \
+        --account-name "$RFP_STORAGE" --account-key "$STG_KEY" \
+        --container-name "$RFP_CONTAINER" --name "$RFP_BLOB" \
+        --permissions r --expiry "$SAS_EXPIRY" --https-only -o tsv 2>/tmp/stg-err.txt)
+    fi
+    if [ -z "$SAS" ]; then
+      if is_tls_proxy_error /tmp/stg-err.txt; then
+        echo "  💡 SAS generation hit proxy TLS error. Falling back to MANUAL UPLOAD."
+        PROXY_TLS_BLOCKED=1
+      else
+        echo "  ❌ Could not generate SAS:"
+        head -c 400 /tmp/stg-err.txt 2>/dev/null
+        exit 1
+      fi
+    else
+      PKG_URL="https://${RFP_STORAGE}.blob.core.windows.net/${RFP_CONTAINER}/${RFP_BLOB}?${SAS}"
+      USE_MI_FETCH=0
+    fi
+  fi
+
+  if [ "$PROXY_TLS_BLOCKED" = "1" ]; then
+    # ── Path C: MANUAL UPLOAD + Managed-Identity fetch ───────────────────
+    #
+    # The workstation can't reach blob.core.windows.net through the corp
+    # proxy, but the Azure Portal in the user's browser CAN (different
+    # network path / SSO web session). And the FA inside the VNet reaches
+    # storage via private endpoint — no proxy in the way at all.
+    #
+    # So we:
+    #   1. Save the zip to a path the user can find.
+    #   2. Print exact portal upload steps.
+    #   3. Wait for user to confirm.
+    #   4. Enable system-assigned MI on the FA (ARM, works through proxy).
+    #   5. Grant the MI 'Storage Blob Data Reader' on the storage account.
+    #      If that role assignment fails (user lacks Owner/UAA on storage),
+    #      tell the user to do it once in portal — script continues anyway.
+    #   6. Set WEBSITE_RUN_FROM_PACKAGE=<bare url, no SAS>
+    #      and WEBSITE_RUN_FROM_PACKAGE_BLOB_MI_RESOURCE_ID=SystemAssigned.
+    echo ""
+    echo "  ┌─────────────────────────────────────────────────────────────────┐"
+    echo "  │  MANUAL UPLOAD REQUIRED                                          │"
+    echo "  └─────────────────────────────────────────────────────────────────┘"
+
+    # Copy the zip to a stable Windows-friendly location so the user can
+    # find it in File Explorer. On Git Bash, /c/... maps to C:\...
+    STABLE_ZIP_DIR="${HOME}/sp-sync-deploy"
+    mkdir -p "$STABLE_ZIP_DIR" 2>/dev/null
+    STABLE_ZIP="$STABLE_ZIP_DIR/$RFP_BLOB"
+    cp "$DEPLOY_ZIP" "$STABLE_ZIP" 2>/dev/null || STABLE_ZIP="$DEPLOY_ZIP"
+
+    # Build a clickable Windows path if we're on MSYS/Git Bash
+    DISPLAY_ZIP="$STABLE_ZIP"
+    if command -v cygpath >/dev/null 2>&1; then
+      DISPLAY_ZIP=$(cygpath -w "$STABLE_ZIP" 2>/dev/null || echo "$STABLE_ZIP")
+    fi
+
+    echo ""
+    echo "  Upload this file via the Azure Portal:"
+    echo "      $DISPLAY_ZIP"
+    echo "    (size: $(du -h "$STABLE_ZIP" 2>/dev/null | cut -f1))"
+    echo ""
+    echo "  Portal steps:"
+    echo "    1. Open: https://portal.azure.com/#@/resource/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${SPOKE_RG}/providers/Microsoft.Storage/storageAccounts/${RFP_STORAGE}/containersList"
+    echo "    2. Click container '${RFP_CONTAINER}' (create it if missing — defaults are fine)"
+    echo "    3. Click 'Upload', pick the file above"
+    echo "    4. In 'Advanced' set Blob name = ${RFP_BLOB}"
+    echo "       (or accept the filename — it already matches)"
+    echo "    5. Click Upload, wait for completion"
+    echo ""
+    read -r -p "  Press ENTER once the upload is complete (Ctrl-C to abort) " _ack
+
+    # Build the bare URL (no SAS — managed identity will authenticate)
+    PKG_URL="https://${RFP_STORAGE}.blob.core.windows.net/${RFP_CONTAINER}/${RFP_BLOB}"
+    USE_MI_FETCH=1
+
+    echo "  Enabling system-assigned managed identity on Function App..."
+    FA_PRINCIPAL_ID=$(az functionapp identity assign \
+      -g "$SPOKE_RG" -n "$FUNC_APP_NAME" \
+      --query principalId -o tsv 2>/dev/null || echo "")
+    if [ -z "$FA_PRINCIPAL_ID" ]; then
+      FA_PRINCIPAL_ID=$(az functionapp identity show \
+        -g "$SPOKE_RG" -n "$FUNC_APP_NAME" \
+        --query principalId -o tsv 2>/dev/null || echo "")
+    fi
+    if [ -n "$FA_PRINCIPAL_ID" ]; then
+      echo "    FA MI principalId: $FA_PRINCIPAL_ID"
+      STG_SCOPE="/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${SPOKE_RG}/providers/Microsoft.Storage/storageAccounts/${RFP_STORAGE}"
+      echo "  Granting 'Storage Blob Data Reader' on $RFP_STORAGE..."
+      if az role assignment create \
+            --assignee-object-id "$FA_PRINCIPAL_ID" \
+            --assignee-principal-type ServicePrincipal \
+            --role "Storage Blob Data Reader" \
+            --scope "$STG_SCOPE" --output none 2>/tmp/stg-err.txt; then
+        echo "    ✅ Role assigned."
+      else
+        ERR_TXT=$(head -c 400 /tmp/stg-err.txt 2>/dev/null)
+        if echo "$ERR_TXT" | grep -qi 'already exists\|RoleAssignmentExists'; then
+          echo "    ✅ Role already assigned."
+        else
+          echo "    ⚠️  Could not assign role automatically:"
+          echo "$ERR_TXT" | sed 's/^/         /'
+          echo ""
+          echo "    ACTION REQUIRED — have an admin run (once, in Cloud Shell or portal):"
+          echo "      az role assignment create \\"
+          echo "        --assignee-object-id $FA_PRINCIPAL_ID \\"
+          echo "        --assignee-principal-type ServicePrincipal \\"
+          echo "        --role 'Storage Blob Data Reader' \\"
+          echo "        --scope $STG_SCOPE"
+          echo ""
+          read -r -p "    Press ENTER once the role is assigned (or to continue anyway) " _ack
+        fi
+      fi
+    else
+      echo "  ⚠️  Could not enable/read FA managed identity. Continuing anyway."
+      echo "     The FA will fail to fetch the package until system MI is enabled"
+      echo "     and granted 'Storage Blob Data Reader' on $RFP_STORAGE."
+    fi
+  fi
 
   echo "  Setting WEBSITE_RUN_FROM_PACKAGE on Function App..."
-  az functionapp config appsettings set \
-    -g "$SPOKE_RG" -n "$FUNC_APP_NAME" \
-    --settings "WEBSITE_RUN_FROM_PACKAGE=${PKG_URL}" \
-    --output none
+  if [ "${USE_MI_FETCH:-0}" = "1" ]; then
+    az functionapp config appsettings set \
+      -g "$SPOKE_RG" -n "$FUNC_APP_NAME" \
+      --settings \
+        "WEBSITE_RUN_FROM_PACKAGE=${PKG_URL}" \
+        "WEBSITE_RUN_FROM_PACKAGE_BLOB_MI_RESOURCE_ID=SystemAssigned" \
+      --output none
+  else
+    az functionapp config appsettings set \
+      -g "$SPOKE_RG" -n "$FUNC_APP_NAME" \
+      --settings "WEBSITE_RUN_FROM_PACKAGE=${PKG_URL}" \
+      --output none
+    # If we previously deployed via MI path, clear the MI hint so the SAS URL wins.
+    az functionapp config appsettings delete \
+      --name "$FUNC_APP_NAME" -g "$SPOKE_RG" \
+      --setting-names WEBSITE_RUN_FROM_PACKAGE_BLOB_MI_RESOURCE_ID \
+      --output none 2>/dev/null || true
+  fi
 
   # WEBSITE_RUN_FROM_PACKAGE=1 (local) and =<url> (blob) are mutually
   # exclusive. If the app was previously on =1, the URL form now wins, but
