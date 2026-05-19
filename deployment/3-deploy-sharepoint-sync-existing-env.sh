@@ -263,49 +263,62 @@ if [ ${#VALIDATION_ERRORS[@]} -gt 0 ]; then
   exit 1
 fi
 
-# --- DNS zone discovery ---
-DNS_ZONE_CACHE_DIR="$(mktemp -d)"
-trap 'rm -rf "$DNS_ZONE_CACHE_DIR"' EXIT
+# --- DNS zone validation ---
+# This script does NOT create PEs or DNS records, so DNS zones are only
+# validated as a sanity check. If zones live in a different subscription,
+# set DNS_SUBSCRIPTION in the env file. If the operator doesn't have
+# Reader on the DNS subscription, set SKIP_DNS_VALIDATION=true.
+SKIP_DNS_VALIDATION="${SKIP_DNS_VALIDATION:-false}"
 
-dns_zone_rg() {
-  local ZONE="$1"
-  local CACHE_FILE="$DNS_ZONE_CACHE_DIR/${ZONE//\//_}"
-  if [ -f "$CACHE_FILE" ]; then cat "$CACHE_FILE"; return; fi
-  local RG
-  RG=$(az network private-dns zone list --subscription "$DNS_SUBSCRIPTION" \
-    --query "[?name=='$ZONE'] | [0].resourceGroup" -o tsv 2>/dev/null || true)
-  printf '%s' "$RG" > "$CACHE_FILE"
-  printf '%s' "$RG"
-}
+if [ "$SKIP_DNS_VALIDATION" = "true" ]; then
+  echo "  ℹ️  SKIP_DNS_VALIDATION=true — DNS zone check skipped"
+  echo "     Ensure these private DNS zones exist and are linked to $SPOKE_VNET_NAME:"
+  echo "       privatelink.blob.core.windows.net"
+  echo "       privatelink.vaultcore.azure.net"
+  echo "       privatelink.search.windows.net"
+  echo "       privatelink.cognitiveservices.azure.com"
+  echo "       privatelink.openai.azure.com"
+else
+  DNS_ZONE_CACHE_DIR="$(mktemp -d)"
+  trap 'rm -rf "$DNS_ZONE_CACHE_DIR"' EXIT
 
-dns_zone_id() {
-  local ZONE="$1"
-  local ID_CACHE="$DNS_ZONE_CACHE_DIR/id_${ZONE//\//_}"
-  if [ -f "$ID_CACHE" ]; then cat "$ID_CACHE"; return; fi
-  local RG=$(dns_zone_rg "$ZONE")
-  local ID="/subscriptions/$DNS_SUBSCRIPTION/resourceGroups/$RG/providers/Microsoft.Network/privateDnsZones/$ZONE"
-  printf '%s' "$ID" > "$ID_CACHE"
-  printf '%s' "$ID"
-}
+  dns_zone_rg() {
+    local ZONE="$1"
+    local CACHE_FILE="$DNS_ZONE_CACHE_DIR/${ZONE//\//_}"
+    if [ -f "$CACHE_FILE" ]; then cat "$CACHE_FILE"; return; fi
+    local RG
+    RG=$(az network private-dns zone list --subscription "$DNS_SUBSCRIPTION" \
+      --query "[?name=='$ZONE'] | [0].resourceGroup" -o tsv 2>/dev/null || true)
+    printf '%s' "$RG" > "$CACHE_FILE"
+    printf '%s' "$RG"
+  }
 
-# Verify critical DNS zones exist (don't auto-create — infra should be in place)
-REQUIRED_ZONES="privatelink.blob.core.windows.net privatelink.vaultcore.azure.net privatelink.search.windows.net privatelink.cognitiveservices.azure.com privatelink.openai.azure.com"
-MISSING_ZONES=""
-for ZONE in $REQUIRED_ZONES; do
-  RG=$(dns_zone_rg "$ZONE")
-  if [ -n "$RG" ] && [ "$RG" != "null" ]; then
-    echo "  ✅ DNS zone: $ZONE → $RG"
-  else
-    MISSING_ZONES="$MISSING_ZONES $ZONE"
-    echo "  ⚠️  DNS zone $ZONE NOT FOUND"
+  REQUIRED_ZONES="privatelink.blob.core.windows.net privatelink.vaultcore.azure.net privatelink.search.windows.net privatelink.cognitiveservices.azure.com privatelink.openai.azure.com"
+  MISSING_ZONES=""
+  for ZONE in $REQUIRED_ZONES; do
+    RG=$(dns_zone_rg "$ZONE")
+    if [ -n "$RG" ] && [ "$RG" != "null" ]; then
+      echo "  ✅ DNS zone: $ZONE → $RG (sub: $DNS_SUBSCRIPTION)"
+    else
+      MISSING_ZONES="$MISSING_ZONES $ZONE"
+      echo "  ⚠️  DNS zone $ZONE NOT FOUND in subscription $DNS_SUBSCRIPTION"
+    fi
+  done
+  if [ -n "$MISSING_ZONES" ]; then
+    echo ""
+    echo "  ⚠️  Could not find these private DNS zones in subscription $DNS_SUBSCRIPTION:"
+    for Z in $MISSING_ZONES; do echo "     $Z"; done
+    echo ""
+    echo "  If DNS zones live in a different subscription, set DNS_SUBSCRIPTION in your env file."
+    echo "  If you don't have Reader on the DNS subscription, set SKIP_DNS_VALIDATION=true."
+    echo "  This script does not create DNS records — zones are only checked as a sanity test."
+    echo ""
+    read -r -p "  Continue anyway? [y/N] " CONTINUE_DNS
+    if [[ ! "$CONTINUE_DNS" =~ ^[Yy]$ ]]; then
+      echo "  Aborting."
+      exit 1
+    fi
   fi
-done
-if [ -n "$MISSING_ZONES" ]; then
-  echo ""
-  echo "  ❌ Missing private DNS zones in subscription $DNS_SUBSCRIPTION:"
-  for Z in $MISSING_ZONES; do echo "     $Z"; done
-  echo "  These must exist before running this script."
-  exit 1
 fi
 
 # --- Firewall policy check ---
