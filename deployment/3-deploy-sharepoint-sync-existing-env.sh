@@ -661,33 +661,46 @@ API_VER="2024-11-01-preview"
 
 if [ "$SEARCH_ACCESS_MODE" = "private" ]; then
   echo "  SEARCH_ACCESS_MODE=private — using private endpoint."
-  # Verify DNS resolves to a private IP (RFC1918) and TCP/443 is reachable.
-  # We deliberately do NOT check the HTTP response code — 401/403 from the
-  # service still means the endpoint is reachable. We only care about
-  # connectivity, not auth.
+  # Best-effort DNS resolution for diagnostics only — never fail the script
+  # if the local tooling can't resolve (Git Bash on Windows has no getent
+  # and may not have python3). The real test is the HTTP probe below.
   SEARCH_HOST="${AI_SEARCH_NAME}.search.windows.net"
-  RESOLVED_IP=$(getent hosts "$SEARCH_HOST" 2>/dev/null | awk '{print $1}' | head -1)
-  if [ -z "$RESOLVED_IP" ]; then
-    RESOLVED_IP=$(python3 -c "import socket; print(socket.gethostbyname('$SEARCH_HOST'))" 2>/dev/null || echo "")
+  set +e
+  RESOLVED_IP=""
+  if command -v getent >/dev/null 2>&1; then
+    RESOLVED_IP=$(getent hosts "$SEARCH_HOST" 2>/dev/null | awk '{print $1}' | head -n1)
   fi
-  if [ -z "$RESOLVED_IP" ]; then
-    echo "  ❌ DNS resolution failed for ${SEARCH_HOST}."
-    echo "     Ensure your machine uses DNS that resolves the private endpoint."
-    exit 1
+  if [ -z "$RESOLVED_IP" ] && command -v python3 >/dev/null 2>&1; then
+    RESOLVED_IP=$(python3 -c "import socket;print(socket.gethostbyname('$SEARCH_HOST'))" 2>/dev/null)
   fi
-  echo "  DNS: ${SEARCH_HOST} → ${RESOLVED_IP}"
-  if [[ "$RESOLVED_IP" =~ ^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.) ]]; then
-    echo "  ✅ Resolves to private IP (private endpoint)."
+  if [ -z "$RESOLVED_IP" ] && command -v python >/dev/null 2>&1; then
+    RESOLVED_IP=$(python -c "import socket;print(socket.gethostbyname('$SEARCH_HOST'))" 2>/dev/null)
+  fi
+  if [ -z "$RESOLVED_IP" ] && command -v nslookup >/dev/null 2>&1; then
+    RESOLVED_IP=$(nslookup "$SEARCH_HOST" 2>/dev/null | awk '/^Address: /{print $2; exit}')
+  fi
+  set -e
+  if [ -n "$RESOLVED_IP" ]; then
+    echo "  DNS: ${SEARCH_HOST} → ${RESOLVED_IP}"
+    if [[ "$RESOLVED_IP" =~ ^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.) ]]; then
+      echo "  ✅ Resolves to private IP (private endpoint)."
+    else
+      echo "  ⚠️  Resolves to a PUBLIC IP. The service is either reachable over the"
+      echo "     public internet (public access enabled) or DNS is not pointing to the PE."
+    fi
   else
-    echo "  ⚠️  Resolves to a PUBLIC IP. The service is either reachable over the"
-    echo "     public internet (public access enabled) or DNS is not pointing to the PE."
+    echo "  (DNS resolution skipped — no local resolver tool found; relying on curl probe.)"
   fi
   # Probe TCP/443 + TLS — accept any HTTP response (even 401/403/404) as reachable.
+  set +e
   HTTP_CODE=$(curl -sS --max-time 10 -o /dev/null -w "%{http_code}" \
       "${SEARCH_ENDPOINT}/servicestats?api-version=${API_VER}" \
-      -H "api-key: $SEARCH_KEY" 2>/dev/null || echo "000")
+      -H "api-key: $SEARCH_KEY" 2>/dev/null)
+  CURL_RC=$?
+  set -e
+  [ -z "$HTTP_CODE" ] && HTTP_CODE="000"
   if [ "$HTTP_CODE" = "000" ]; then
-    echo "  ❌ Cannot reach ${SEARCH_ENDPOINT} from this machine (network/TLS failure)."
+    echo "  ❌ Cannot reach ${SEARCH_ENDPOINT} from this machine (curl exit=${CURL_RC})."
     echo "     Connect to the VNet (VPN/bastion) or use SEARCH_ACCESS_MODE=toggle-public."
     exit 1
   fi
