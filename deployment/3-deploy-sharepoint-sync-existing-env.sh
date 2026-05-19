@@ -982,8 +982,11 @@ echo ""
 ###############################################################################
 echo "──── Step 6b: Ensuring all indexers use Private execution ────"
 SEARCH_KEY=$(az search admin-key show --service-name "$AI_SEARCH_NAME" -g "$SPOKE_RG" --query primaryKey -o tsv)
+# NOTE: $select is intentionally omitted — Git Bash on Windows mangles the
+# '$' in the URL ("curl: (3) URL rejected: Malformed input to a URL function").
+# We parse names client-side anyway, so dropping it is harmless.
 IDX_LIST=$(curl -sS -H "api-key: $SEARCH_KEY" \
-  "https://${AI_SEARCH_NAME}.search.windows.net/indexers?api-version=2024-07-01&\$select=name" 2>/dev/null \
+  "https://${AI_SEARCH_NAME}.search.windows.net/indexers?api-version=2024-07-01" 2>/dev/null \
   | $PY -c "import sys,json; print('\n'.join(i['name'] for i in json.load(sys.stdin).get('value',[])))" 2>/dev/null || true)
 for IDXR_NAME in $IDX_LIST; do
   [ -z "$IDXR_NAME" ] && continue
