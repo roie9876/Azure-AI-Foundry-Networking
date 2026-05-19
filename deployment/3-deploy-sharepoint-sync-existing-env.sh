@@ -139,6 +139,11 @@ DNS_SUBSCRIPTION="${DNS_SUBSCRIPTION:-$SUBSCRIPTION_ID}"
 DNS_ZONE_RG="${DNS_ZONE_RG:-$SPOKE_RG}"
 SKIP_FIREWALL_RULES="${SKIP_FIREWALL_RULES:-false}"
 SKIP_SHARED_PRIVATE_LINKS="${SKIP_SHARED_PRIVATE_LINKS:-false}"
+# START_STEP: skip already-completed setup steps on re-runs. 0=run everything.
+# Example: START_STEP=6 skips Steps 0-5 (validation, KV, app settings, RBAC, SPLs)
+# and jumps straight to Step 6 (AI Search artifacts). Variable lookups (KV URIs,
+# Search admin key) still run unconditionally so downstream steps have what they need.
+START_STEP="${START_STEP:-0}"
 FW_MODE="${FW_MODE:-azure}"
 FW_POLICY_NAME="${FW_POLICY_NAME:-hub-fw-policy}"
 FW_POLICY_RG="${FW_POLICY_RG:-${HUB_RG:-}}"
@@ -360,6 +365,7 @@ echo ""
 ###############################################################################
 # 1. Key Vault: Store SPN Secrets + RBAC
 ###############################################################################
+if (( START_STEP <= 1 )); then
 echo "──── Step 1: Key Vault — Secrets + RBAC ────"
 
 # RBAC: Function App → Key Vault Secrets User
@@ -388,8 +394,11 @@ az keyvault secret set --vault-name "$KV_NAME" --name "sp-tenant-id" --value "$S
 az keyvault secret set --vault-name "$KV_NAME" --name "sp-client-id" --value "$SP_CLIENT_ID" --output none
 az keyvault secret set --vault-name "$KV_NAME" --name "sp-client-secret" --value "$SP_CLIENT_SECRET" --output none
 echo "  ✅ Secrets stored: sp-tenant-id, sp-client-id, sp-client-secret"
+else
+echo "──── Step 1: Key Vault — Secrets + RBAC (SKIPPED: START_STEP=$START_STEP) ────"
+fi
 
-# Get secret URIs for KV references
+# Get secret URIs for KV references (always run — downstream steps need them)
 SP_TENANT_ID_URI=$(az keyvault secret show --vault-name "$KV_NAME" --name "sp-tenant-id" --query id -o tsv)
 SP_CLIENT_ID_URI=$(az keyvault secret show --vault-name "$KV_NAME" --name "sp-client-id" --query id -o tsv)
 SP_CLIENT_SECRET_URI=$(az keyvault secret show --vault-name "$KV_NAME" --name "sp-client-secret" --query id -o tsv)
@@ -405,12 +414,14 @@ echo ""
 ###############################################################################
 # 2. Configure Function App Settings
 ###############################################################################
-echo "──── Step 2: Configuring Function App Settings ────"
-
+# Artifact names (used by both Step 2 settings and Step 6 search artifacts)
 IDX="${INDEX_NAME:-sharepoint-index}"
 DS="${DATASOURCE_NAME:-sharepoint-blob-ds}"
 SS="${SKILLSET_NAME:-sharepoint-sync-skillset}"
 IDXR="${INDEXER_NAME:-sharepoint-blob-indexer}"
+
+if (( START_STEP <= 2 )); then
+echo "──── Step 2: Configuring Function App Settings ────"
 
 az functionapp config appsettings set \
   --name "$FUNC_APP_NAME" \
@@ -450,11 +461,15 @@ az functionapp config appsettings set \
   --output none
 
 echo "  ✅ Function App settings configured"
+else
+echo "──── Step 2: Configuring Function App Settings (SKIPPED: START_STEP=$START_STEP) ────"
+fi
 echo ""
 
 ###############################################################################
 # 3. RBAC: Function App → Foundry Storage + its own Storage
 ###############################################################################
+if (( START_STEP <= 3 )); then
 echo "──── Step 3: RBAC — Function App → Storage ────"
 
 # Function App → Foundry Storage (for blob read/write)
@@ -477,12 +492,15 @@ for ROLE in "Storage Blob Data Owner" "Storage Account Contributor" \
     --output none 2>/dev/null || true
 done
 echo "  ✅ Function App → RBAC on Function Storage ($FUNC_STORAGE_NAME)"
+else
+echo "──── Step 3: RBAC — Function App → Storage (SKIPPED: START_STEP=$START_STEP) ────"
+fi
 echo ""
 
 ###############################################################################
 # 3b. Create Blob Container (if missing)
 ###############################################################################
-if [ -z "$CONTAINER_EXISTS" ]; then
+if (( START_STEP <= 3 )) && [ -z "$CONTAINER_EXISTS" ]; then
   echo "──── Step 3b: Creating Blob Container ────"
   az rest --method PUT \
     --url "https://management.azure.com${STORAGE_ID}/blobServices/default/containers/${BLOB_CONTAINER_NAME}?api-version=2023-05-01" \
@@ -495,7 +513,9 @@ fi
 ###############################################################################
 # 4. Shared Private Links: AI Search → Storage + AI Services
 ###############################################################################
-if [ "$SKIP_SHARED_PRIVATE_LINKS" = "true" ]; then
+if (( START_STEP > 4 )); then
+  echo "──── Step 4: Shared Private Links (SKIPPED: START_STEP=$START_STEP) ────"
+elif [ "$SKIP_SHARED_PRIVATE_LINKS" = "true" ]; then
   echo "──── Step 4: Shared Private Links (SKIPPED — SKIP_SHARED_PRIVATE_LINKS=true) ────"
   echo "  ℹ️  Assumes SPLs already exist: AI Search → Storage (blob), AI Search → AI Services (openai_account + cognitiveservices_account)"
   echo ""
@@ -642,6 +662,7 @@ fi  # end SKIP_SHARED_PRIVATE_LINKS check
 ###############################################################################
 # 5. RBAC: AI Search → AI Services
 ###############################################################################
+if (( START_STEP <= 5 )); then
 echo "──── Step 5: RBAC — AI Search → AI Services ────"
 
 for ROLE in "Cognitive Services OpenAI User" "Cognitive Services User"; do
@@ -660,6 +681,9 @@ az rest --method PATCH \
   --body '{"properties": {"networkAcls": {"bypass": "AzureServices"}}}' \
   --output none
 echo "  ✅ AI Services: trusted service bypass enabled"
+else
+echo "──── Step 5: RBAC — AI Search → AI Services (SKIPPED: START_STEP=$START_STEP) ────"
+fi
 echo ""
 
 ###############################################################################
