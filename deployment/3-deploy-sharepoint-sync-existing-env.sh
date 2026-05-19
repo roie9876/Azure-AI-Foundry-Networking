@@ -1,6 +1,17 @@
 #!/bin/bash
 set -euo pipefail
 
+# Portable python: Linux/macOS usually have `python3`, Windows Git Bash often
+# has only `python`. Pick whichever is available; abort early if neither is.
+if command -v python3 >/dev/null 2>&1; then
+  PY="python3"
+elif command -v python >/dev/null 2>&1; then
+  PY="python"
+else
+  echo "ERROR: 'python3' or 'python' is required on PATH (used for JSON parsing)." >&2
+  exit 1
+fi
+
 ###############################################################################
 # 3-deploy-sharepoint-sync-existing-env.sh
 #
@@ -493,12 +504,12 @@ SEARCH_MGMT_API="2025-05-01"
 EXISTING_SPLS=$(az rest --method GET \
   --url "https://management.azure.com/subscriptions/$SUBSCRIPTION/resourceGroups/$SPOKE_RG/providers/Microsoft.Search/searchServices/$AI_SEARCH_NAME/sharedPrivateLinkResources?api-version=${SEARCH_MGMT_API}" \
   -o json 2>/dev/null || echo '{"value":[]}')
-SPL_COUNT=$(echo "$EXISTING_SPLS" | python3 -c "import json,sys; print(len(json.load(sys.stdin).get('value',[])))" 2>/dev/null || echo 0)
+SPL_COUNT=$(echo "$EXISTING_SPLS" | $PY -c "import json,sys; print(len(json.load(sys.stdin).get('value',[])))" 2>/dev/null || echo 0)
 echo "  Found $SPL_COUNT existing shared private link(s)"
 
 spl_exists() {
   local TARGET_ID="$1" GROUP_ID="$2"
-  python3 -c "
+  $PY -c "
 import json,sys
 data = json.loads(sys.argv[1])
 tid = sys.argv[2].lower()
@@ -671,7 +682,7 @@ if [ "$SEARCH_ACCESS_MODE" = "private" ]; then
     RESOLVED_IP=$(getent hosts "$SEARCH_HOST" 2>/dev/null | awk '{print $1}' | head -n1)
   fi
   if [ -z "$RESOLVED_IP" ] && command -v python3 >/dev/null 2>&1; then
-    RESOLVED_IP=$(python3 -c "import socket;print(socket.gethostbyname('$SEARCH_HOST'))" 2>/dev/null)
+    RESOLVED_IP=$($PY -c "import socket;print(socket.gethostbyname('$SEARCH_HOST'))" 2>/dev/null)
   fi
   if [ -z "$RESOLVED_IP" ] && command -v python >/dev/null 2>&1; then
     RESOLVED_IP=$(python -c "import socket;print(socket.gethostbyname('$SEARCH_HOST'))" 2>/dev/null)
@@ -968,13 +979,13 @@ echo ""
 echo "──── Step 6b: Ensuring all indexers use Private execution ────"
 SEARCH_KEY=$(az search admin-key show --service-name "$AI_SEARCH_NAME" -g "$SPOKE_RG" --query primaryKey -o tsv)
 IDX_LIST=$(curl -sS -H "api-key: $SEARCH_KEY" \
-  "https://${AI_SEARCH_NAME}.search.windows.net/indexers?api-version=2024-07-01&\$select=name" \
-  | python3 -c "import sys,json; print('\n'.join(i['name'] for i in json.load(sys.stdin).get('value',[])))" 2>/dev/null || true)
+  "https://${AI_SEARCH_NAME}.search.windows.net/indexers?api-version=2024-07-01&\$select=name" 2>/dev/null \
+  | $PY -c "import sys,json; print('\n'.join(i['name'] for i in json.load(sys.stdin).get('value',[])))" 2>/dev/null || true)
 for IDXR_NAME in $IDX_LIST; do
   [ -z "$IDXR_NAME" ] && continue
   IDXR_JSON=$(curl -sS -H "api-key: $SEARCH_KEY" \
     "https://${AI_SEARCH_NAME}.search.windows.net/indexers/${IDXR_NAME}?api-version=2024-07-01")
-  NEW_JSON=$(echo "$IDXR_JSON" | python3 -c "
+  NEW_JSON=$(echo "$IDXR_JSON" | $PY -c "
 import sys,json
 d=json.load(sys.stdin)
 params=d.setdefault('parameters',{})
@@ -1105,6 +1116,7 @@ SCM_HOST="${FUNC_APP_NAME}.scm.azurewebsites.net"
 ARM_TOKEN=$(az account get-access-token --resource https://management.azure.com/ --query accessToken -o tsv)
 
 PUBLISH_OK=0
+SCM_BLOCKED=0
 for ATTEMPT in 1 2 3 4 5; do
   echo "  Publish attempt $ATTEMPT/5 (SCM /api/publish)..."
   HTTP=$(curl -sS -o /tmp/pub-resp.json -w "%{http_code}" \
@@ -1118,14 +1130,38 @@ for ATTEMPT in 1 2 3 4 5; do
     PUBLISH_OK=1
     break
   fi
-  echo "  ⚠️  HTTP $HTTP — $(head -c 300 /tmp/pub-resp.json)"
+  RESP_HEAD=$(head -c 300 /tmp/pub-resp.json 2>/dev/null || echo "")
+  echo "  ⚠️  HTTP $HTTP — $RESP_HEAD"
+  # Fail fast on 401/403 with HTML body — that's a network policy (SCM IP
+  # restrictions, captive portal, WAF block). Retrying will not help.
+  if { [ "$HTTP" = "401" ] || [ "$HTTP" = "403" ]; } && \
+     echo "$RESP_HEAD" | grep -qiE "<html|<!DOCTYPE"; then
+    SCM_BLOCKED=1
+    break
+  fi
   [ "$ATTEMPT" -lt 5 ] && sleep 30
 done
 
 rm -rf "$PKG_DIR" "$DEPLOY_ZIP" /tmp/pub-resp.json
 
 if [ "$PUBLISH_OK" != "1" ]; then
-  echo "  ❌ Function App publish failed after 5 attempts."
+  echo "  ❌ Function App publish failed."
+  if [ "$SCM_BLOCKED" = "1" ]; then
+    echo ""
+    echo "  The SCM endpoint (https://${SCM_HOST}) returned HTTP $HTTP with an HTML body."
+    echo "  This is a NETWORK POLICY block, not a transient error. Common causes:"
+    echo "    - Function App SCM site has IP access restrictions and your egress IP isn't allowlisted"
+    echo "    - A corporate proxy / captive portal is intercepting the request"
+    echo "    - SCM site is on a private endpoint and your machine isn't on the VNet for SCM"
+    echo ""
+    echo "  Options to unblock:"
+    echo "    1) Add your egress IP to the Function App's SCM access restrictions:"
+    echo "         az functionapp config access-restriction add -g $SPOKE_RG -n $FUNC_APP_NAME \\"
+    echo "           --scm-site true --rule-name dev-laptop --priority 100 --ip-address <your-ip>/32"
+    echo "    2) Run this script from a machine that already has SCM access (jumpbox/bastion)"
+    echo "    3) Switch to Run-From-Package via blob URL (manual: upload zip to private storage,"
+    echo "       generate SAS, set WEBSITE_RUN_FROM_PACKAGE=<sas-url>, restart)"
+  fi
   exit 1
 fi
 
@@ -1161,7 +1197,7 @@ else
     SEARCH_CONNECTION=$(curl -sf "${FOUNDRY_ENDPOINT}/connections/${SEARCH_CONNECTION_NAME}?api-version=${AGENT_API_VER}" \
       -H "Authorization: Bearer $AGENT_TOKEN" 2>/dev/null)
 
-    SEARCH_CONNECTION_ID=$(echo "$SEARCH_CONNECTION" | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
+    SEARCH_CONNECTION_ID=$(echo "$SEARCH_CONNECTION" | $PY -c "import json,sys; print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
 
     if [ -z "$SEARCH_CONNECTION_ID" ]; then
       echo "  ⚠️  Could not find project connection '${SEARCH_CONNECTION_NAME}'."
@@ -1176,7 +1212,7 @@ else
         AGENT_QUERY_TYPE_ENV="$AGENT_QUERY_TYPE" \
         SEMANTIC_CONFIG_NAME_ENV="${IDX}-semantic-configuration" \
         SEMANTIC_CONFIG_ENABLED_ENV="$SEMANTIC_CONFIG_ENABLED" \
-        python3 -c "
+        $PY -c "
 import json, os
 qt = os.environ['AGENT_QUERY_TYPE_ENV']
 uses_vector   = qt in ('vector', 'vectorSemanticHybrid')
@@ -1217,7 +1253,7 @@ print(json.dumps(body))
         -H "Content-Type: application/json" \
         -d "$AGENT_BODY" 2>/dev/null)
 
-      AGENT_VERSION=$(echo "$AGENT_RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin).get('version','?'))" 2>/dev/null)
+      AGENT_VERSION=$(echo "$AGENT_RESPONSE" | $PY -c "import json,sys; print(json.load(sys.stdin).get('version','?'))" 2>/dev/null)
 
       if [ "$AGENT_VERSION" != "?" ] && [ -n "$AGENT_VERSION" ]; then
         echo "  ✅ Agent '${AGENT_NAME}' version ${AGENT_VERSION} created"
@@ -1351,7 +1387,7 @@ EOF
       -X PUT "$CONN_URL" -H "Authorization: Bearer $ARM_TOKEN" \
       -H "Content-Type: application/json" --data "$CONN_BODY")
     if [[ "$CONN_HTTP" =~ ^20[0-9]$ ]]; then
-      CONN_ID=$(python3 -c "import json; print(json.load(open('/tmp/conn-resp.json')).get('id',''))")
+      CONN_ID=$($PY -c "import json; print(json.load(open('/tmp/conn-resp.json')).get('id',''))")
       echo "  ✅ Project connection: ${PROJECT_CONN_NAME}"
     else
       echo "  ❌ Project connection failed (HTTP $CONN_HTTP):"; cat /tmp/conn-resp.json; echo; exit 1
@@ -1363,7 +1399,7 @@ EOF
     AGENTIC_BODY=$(AGENT_INSTR="$AGENTIC_INSTRUCTIONS" \
       AGENT_MODEL_ENV="${AGENTIC_PLANNER_MODEL}" \
       CONN_ID="$CONN_ID" MCP_URL="$MCP_ENDPOINT" \
-      python3 -c "
+      $PY -c "
 import json, os
 body = {
   'definition': {
@@ -1386,7 +1422,7 @@ print(json.dumps(body))")
       -H "Authorization: Bearer $AGENT_TOKEN" -H "Content-Type: application/json" \
       --data "$AGENTIC_BODY")
     if [[ "$AGENTIC_HTTP" =~ ^20[0-9]$ ]]; then
-      AGENTIC_VER=$(python3 -c "import json; print(json.load(open('/tmp/agentic-resp.json')).get('version','?'))")
+      AGENTIC_VER=$($PY -c "import json; print(json.load(open('/tmp/agentic-resp.json')).get('version','?'))")
       echo "  ✅ Agent '${KB_AGENT_NAME}' version ${AGENTIC_VER} created"
     else
       echo "  ⚠️  Agent '${KB_AGENT_NAME}' creation failed (HTTP $AGENTIC_HTTP):"
