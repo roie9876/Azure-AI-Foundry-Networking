@@ -2,13 +2,17 @@
 set -euo pipefail
 
 # Portable python: Linux/macOS usually have `python3`, Windows Git Bash often
-# has only `python`. Pick whichever is available; abort early if neither is.
+# has only `python` or `py` (Python Launcher for Windows from python.org).
 if command -v python3 >/dev/null 2>&1; then
   PY="python3"
 elif command -v python >/dev/null 2>&1; then
   PY="python"
+elif command -v py >/dev/null 2>&1; then
+  PY="py -3"
 else
-  echo "ERROR: 'python3' or 'python' is required on PATH (used for JSON parsing)." >&2
+  echo "ERROR: need 'python3', 'python', or 'py' on PATH (used for JSON parsing)." >&2
+  echo "  Windows: install Python from https://www.python.org/downloads/ and check" >&2
+  echo "  'Add python.exe to PATH' during install. Then restart your Git Bash shell." >&2
   exit 1
 fi
 
