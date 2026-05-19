@@ -1177,25 +1177,112 @@ for ATTEMPT in 1 2 3; do
   [ "$ATTEMPT" -lt 3 ] && sleep 20
 done
 
-rm -rf "$PKG_DIR" "$DEPLOY_ZIP" /tmp/pub-err.txt
-
+# Fallback path: blob-based Run-From-Package. This is the most reliable deploy
+# method for locked-down apps where Kudu's SCM /api/publish controller is
+# broken (e.g. Linux Elastic Premium with WEBSITE_RUN_FROM_PACKAGE already set,
+# private-endpoint-isolated SCM, or Kudu Lite). It uploads the zip to the
+# Function App's existing storage account and points the app at it via SAS.
 if [ "$PUBLISH_OK" != "1" ]; then
-  echo "  ❌ Function App publish failed."
   echo ""
-  echo "  Last error: $PUBLISH_LAST_ERR"
+  echo "  ⚠️  SCM zip-deploy did not succeed. Falling back to blob-based"
+  echo "     Run-From-Package (WEBSITE_RUN_FROM_PACKAGE)."
+  echo "     Last SCM error:"
+  echo "$PUBLISH_LAST_ERR" | head -3 | sed 's/^/       /'
   echo ""
-  echo "  Common causes & options to unblock:"
-  echo "    1) SCM/deployment endpoint blocked by corporate proxy or IP restrictions."
-  echo "       Add your egress IP to the Function App's SCM access restrictions:"
-  echo "         az functionapp config access-restriction add -g $SPOKE_RG -n $FUNC_APP_NAME \\"
-  echo "           --scm-site true --rule-name dev-laptop --priority 100 --ip-address <your-ip>/32"
-  echo "    2) Run this script from a machine inside the VNet (jumpbox/bastion/VPN)."
-  echo "    3) Switch to Run-From-Package via blob URL (upload zip to private storage,"
-  echo "       generate SAS, set WEBSITE_RUN_FROM_PACKAGE=<sas-url>, restart)."
-  exit 1
+
+  RFP_CONTAINER="scm-releases"
+  RFP_BLOB="sp-sync-$(date +%Y%m%d-%H%M%S).zip"
+
+  # Use the FA's runtime storage account for the package.
+  RFP_STORAGE="${FUNC_STORAGE_NAME}"
+  if [ -z "$RFP_STORAGE" ]; then
+    echo "  ❌ FUNC_STORAGE_NAME is not set — cannot stage deployment package."
+    exit 1
+  fi
+  echo "  Storage account: $RFP_STORAGE"
+  echo "  Container:       $RFP_CONTAINER"
+  echo "  Blob:            $RFP_BLOB"
+
+  # Get storage account key (works if caller has Storage Account Contributor
+  # or Reader+Data role with key-list permission). If key listing is blocked
+  # by policy, surface a clear error.
+  STG_KEY=$(az storage account keys list -g "$SPOKE_RG" -n "$RFP_STORAGE" \
+    --query "[0].value" -o tsv 2>/tmp/stg-err.txt || true)
+  if [ -z "$STG_KEY" ]; then
+    echo "  ❌ Could not retrieve storage account key for $RFP_STORAGE."
+    echo "     $(head -c 400 /tmp/stg-err.txt 2>/dev/null)"
+    echo ""
+    echo "     Either grant 'Storage Account Key Operator' on the account, or"
+    echo "     disable the 'allow shared key access = false' policy temporarily."
+    exit 1
+  fi
+
+  # Create container (idempotent). --account-key uses the data plane, which
+  # requires the caller's IP to reach the storage account. If the SA has
+  # private endpoints only, run this script from inside the VNet.
+  az storage container create \
+    --account-name "$RFP_STORAGE" --account-key "$STG_KEY" \
+    --name "$RFP_CONTAINER" --output none 2>/tmp/stg-err.txt || {
+      echo "  ❌ Could not create/access container '$RFP_CONTAINER':"
+      head -c 400 /tmp/stg-err.txt 2>/dev/null
+      echo ""
+      echo "     If the storage account is private-endpoint-only, run this"
+      echo "     script from inside the VNet (jumpbox/bastion/VPN)."
+      exit 1
+    }
+
+  echo "  Uploading $(du -h "$DEPLOY_ZIP" | cut -f1) zip to blob storage..."
+  if ! az storage blob upload \
+        --account-name "$RFP_STORAGE" --account-key "$STG_KEY" \
+        --container-name "$RFP_CONTAINER" --name "$RFP_BLOB" \
+        --file "$DEPLOY_ZIP" --overwrite --output none 2>/tmp/stg-err.txt; then
+    echo "  ❌ Blob upload failed:"
+    head -c 400 /tmp/stg-err.txt 2>/dev/null
+    exit 1
+  fi
+
+  # Generate read-only SAS valid 10 years (long-lived; FA needs it to fetch
+  # the package on every cold start).
+  SAS_EXPIRY=$(date -u -v+10y +%Y-%m-%dT%H:%MZ 2>/dev/null || \
+               date -u -d '+10 years' +%Y-%m-%dT%H:%MZ 2>/dev/null || \
+               date -u -d '+3650 days' +%Y-%m-%dT%H:%MZ)
+  SAS=$(az storage blob generate-sas \
+    --account-name "$RFP_STORAGE" --account-key "$STG_KEY" \
+    --container-name "$RFP_CONTAINER" --name "$RFP_BLOB" \
+    --permissions r --expiry "$SAS_EXPIRY" --https-only -o tsv 2>/tmp/stg-err.txt)
+  if [ -z "$SAS" ]; then
+    echo "  ❌ Could not generate SAS:"
+    head -c 400 /tmp/stg-err.txt 2>/dev/null
+    exit 1
+  fi
+
+  # Build the blob URL. Use the private-DNS-resolvable .blob.core.windows.net
+  # hostname so the FA fetches via its VNet integration / private endpoint.
+  PKG_URL="https://${RFP_STORAGE}.blob.core.windows.net/${RFP_CONTAINER}/${RFP_BLOB}?${SAS}"
+
+  echo "  Setting WEBSITE_RUN_FROM_PACKAGE on Function App..."
+  az functionapp config appsettings set \
+    -g "$SPOKE_RG" -n "$FUNC_APP_NAME" \
+    --settings "WEBSITE_RUN_FROM_PACKAGE=${PKG_URL}" \
+    --output none
+
+  # WEBSITE_RUN_FROM_PACKAGE=1 (local) and =<url> (blob) are mutually
+  # exclusive. If the app was previously on =1, the URL form now wins, but
+  # we explicitly clear the legacy ENABLE_ORYX_BUILD/SCM_DO_BUILD_DURING_DEPLOYMENT
+  # to avoid any conflicting build step.
+  az functionapp config appsettings delete \
+    --name "$FUNC_APP_NAME" -g "$SPOKE_RG" \
+    --setting-names SCM_DO_BUILD_DURING_DEPLOYMENT ENABLE_ORYX_BUILD \
+    --output none 2>/dev/null || true
+
+  PUBLISH_OK=1
+  echo "  ✅ Package staged at: ${RFP_STORAGE}/${RFP_CONTAINER}/${RFP_BLOB}"
+  rm -f /tmp/stg-err.txt
 fi
 
-echo "  Restarting Function App..."
+rm -rf "$PKG_DIR" "$DEPLOY_ZIP" /tmp/pub-err.txt
+
+echo "  Restarting Function App (forces it to pull the new package)..."
 az functionapp restart -g "$SPOKE_RG" -n "$FUNC_APP_NAME" --output none
 echo "  ✅ Sync code deployed"
 echo ""
