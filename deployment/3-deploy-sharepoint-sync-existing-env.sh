@@ -1006,8 +1006,11 @@ SEARCH_KEY=$(az search admin-key show --service-name "$AI_SEARCH_NAME" -g "$SPOK
 # We parse names client-side anyway, so dropping it is harmless.
 IDX_LIST=$(curl -sS -H "api-key: $SEARCH_KEY" \
   "https://${AI_SEARCH_NAME}.search.windows.net/indexers?api-version=2024-07-01" 2>/dev/null \
-  | $PY -c "import sys,json; print('\n'.join(i['name'] for i in json.load(sys.stdin).get('value',[])))" 2>/dev/null || true)
+  | $PY -c "import sys,json; sys.stdout.write('\n'.join(i['name'] for i in json.load(sys.stdin).get('value',[])))" 2>/dev/null \
+  | tr -d '\r' || true)
 for IDXR_NAME in $IDX_LIST; do
+  # Strip any stray CR (Windows Python text-mode stdout adds \r\n; for-loop split keeps the \r)
+  IDXR_NAME="${IDXR_NAME%$'\r'}"
   [ -z "$IDXR_NAME" ] && continue
   IDXR_JSON=$(curl -sS -H "api-key: $SEARCH_KEY" \
     "https://${AI_SEARCH_NAME}.search.windows.net/indexers/${IDXR_NAME}?api-version=2024-07-01")
