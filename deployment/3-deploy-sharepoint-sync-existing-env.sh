@@ -661,14 +661,37 @@ API_VER="2024-11-01-preview"
 
 if [ "$SEARCH_ACCESS_MODE" = "private" ]; then
   echo "  SEARCH_ACCESS_MODE=private — using private endpoint."
-  if ! curl -sf --max-time 10 -o /dev/null \
+  # Verify DNS resolves to a private IP (RFC1918) and TCP/443 is reachable.
+  # We deliberately do NOT check the HTTP response code — 401/403 from the
+  # service still means the endpoint is reachable. We only care about
+  # connectivity, not auth.
+  SEARCH_HOST="${AI_SEARCH_NAME}.search.windows.net"
+  RESOLVED_IP=$(getent hosts "$SEARCH_HOST" 2>/dev/null | awk '{print $1}' | head -1)
+  if [ -z "$RESOLVED_IP" ]; then
+    RESOLVED_IP=$(python3 -c "import socket; print(socket.gethostbyname('$SEARCH_HOST'))" 2>/dev/null || echo "")
+  fi
+  if [ -z "$RESOLVED_IP" ]; then
+    echo "  ❌ DNS resolution failed for ${SEARCH_HOST}."
+    echo "     Ensure your machine uses DNS that resolves the private endpoint."
+    exit 1
+  fi
+  echo "  DNS: ${SEARCH_HOST} → ${RESOLVED_IP}"
+  if [[ "$RESOLVED_IP" =~ ^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.) ]]; then
+    echo "  ✅ Resolves to private IP (private endpoint)."
+  else
+    echo "  ⚠️  Resolves to a PUBLIC IP. The service is either reachable over the"
+    echo "     public internet (public access enabled) or DNS is not pointing to the PE."
+  fi
+  # Probe TCP/443 + TLS — accept any HTTP response (even 401/403/404) as reachable.
+  HTTP_CODE=$(curl -sS --max-time 10 -o /dev/null -w "%{http_code}" \
       "${SEARCH_ENDPOINT}/servicestats?api-version=${API_VER}" \
-      -H "api-key: $SEARCH_KEY"; then
-    echo "  ❌ Cannot reach ${SEARCH_ENDPOINT} from this machine."
+      -H "api-key: $SEARCH_KEY" 2>/dev/null || echo "000")
+  if [ "$HTTP_CODE" = "000" ]; then
+    echo "  ❌ Cannot reach ${SEARCH_ENDPOINT} from this machine (network/TLS failure)."
     echo "     Connect to the VNet (VPN/bastion) or use SEARCH_ACCESS_MODE=toggle-public."
     exit 1
   fi
-  echo "  ✅ Private endpoint reachable."
+  echo "  ✅ Endpoint reachable (HTTP ${HTTP_CODE})."
 else
   echo "  ⚠️  SEARCH_ACCESS_MODE=toggle-public — will temporarily enable AI Search public access."
   echo "     This may violate the customer's network policy. Prefer SEARCH_ACCESS_MODE=private"
