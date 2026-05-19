@@ -1141,66 +1141,57 @@ DEPLOY_ZIP="/tmp/sp-sync-deploy-$$.zip"
 (cd "$PKG_DIR" && zip -rq "$DEPLOY_ZIP" . -x "*.pyc" "*/__pycache__/*" ".git/*" ".env" ".venv/*")
 echo "  Zip size: $(du -h "$DEPLOY_ZIP" | cut -f1)"
 
-SCM_HOST="${FUNC_APP_NAME}.scm.azurewebsites.net"
-# Flex Consumption Function Apps get a randomized hostname suffix
-# (e.g. fu-foo-01-hsaya4b9dedxf2ff.swedencentral-01.azurewebsites.net), so the
-# default <name>.scm.azurewebsites.net does NOT resolve. Pull the real SCM
-# hostname from enabledHostNames and prefer it if found.
-SCM_HOST_DISCOVERED=$(az functionapp show -g "$SPOKE_RG" -n "$FUNC_APP_NAME" \
-  --query "enabledHostNames[?contains(@, '.scm.')] | [0]" -o tsv 2>/dev/null || true)
-if [ -n "$SCM_HOST_DISCOVERED" ] && [ "$SCM_HOST_DISCOVERED" != "None" ]; then
-  SCM_HOST="$SCM_HOST_DISCOVERED"
-  echo "  SCM host: $SCM_HOST"
+# Detect Function App SKU. Flex Consumption uses a different deployment API
+# (OneDeploy via /api/publish?type=zip, NOT the classic Kudu /api/publish),
+# and the safest cross-SKU path is `az functionapp deployment source config-zip`,
+# which inspects the SKU and chooses the right endpoint.
+FUNC_SKU=$(az functionapp show -g "$SPOKE_RG" -n "$FUNC_APP_NAME" \
+  --query "[properties.sku, sku]" -o tsv 2>/dev/null | tr -d '\r\n\t' || true)
+# Some SKUs only expose it via the plan; the kind alone is enough to detect Flex.
+FUNC_KIND=$(az functionapp show -g "$SPOKE_RG" -n "$FUNC_APP_NAME" --query "kind" -o tsv 2>/dev/null || true)
+IS_FLEX=0
+if echo "${FUNC_SKU}${FUNC_KIND}" | grep -qi "flex"; then
+  IS_FLEX=1
 fi
-ARM_TOKEN=$(az account get-access-token --resource https://management.azure.com/ --query accessToken -o tsv)
+echo "  Function App kind: $FUNC_KIND (Flex=$IS_FLEX)"
 
 PUBLISH_OK=0
-SCM_BLOCKED=0
-for ATTEMPT in 1 2 3 4 5; do
-  echo "  Publish attempt $ATTEMPT/5 (SCM /api/publish)..."
-  HTTP=$(curl -sS -o /tmp/pub-resp.json -w "%{http_code}" \
-    --max-time 900 \
-    -X POST "https://${SCM_HOST}/api/publish?RemoteBuild=false&Deployer=az_cli" \
-    -H "Authorization: Bearer $ARM_TOKEN" \
-    -H "Content-Type: application/zip" \
-    --data-binary "@${DEPLOY_ZIP}" 2>&1) || HTTP="000"
-  if [ "$HTTP" = "200" ] || [ "$HTTP" = "202" ]; then
-    echo "  ✅ Accepted (HTTP $HTTP)"
+PUBLISH_LAST_ERR=""
+
+# Primary path: use az CLI, which speaks the right deployment API per SKU
+# (OneDeploy for Flex, classic Kudu /api/publish for Consumption/Premium).
+for ATTEMPT in 1 2 3; do
+  echo "  Publish attempt $ATTEMPT/3 (az functionapp deployment source config-zip)..."
+  if az functionapp deployment source config-zip \
+      -g "$SPOKE_RG" -n "$FUNC_APP_NAME" \
+      --src "$DEPLOY_ZIP" \
+      --build-remote false \
+      --timeout 900 \
+      --output none 2>/tmp/pub-err.txt; then
+    echo "  ✅ Accepted"
     PUBLISH_OK=1
     break
   fi
-  RESP_HEAD=$(head -c 300 /tmp/pub-resp.json 2>/dev/null || echo "")
-  echo "  ⚠️  HTTP $HTTP — $RESP_HEAD"
-  # Fail fast on 401/403 with HTML body — that's a network policy (SCM IP
-  # restrictions, captive portal, WAF block). Retrying will not help.
-  if { [ "$HTTP" = "401" ] || [ "$HTTP" = "403" ]; } && \
-     echo "$RESP_HEAD" | grep -qiE "<html|<!DOCTYPE"; then
-    SCM_BLOCKED=1
-    break
-  fi
-  [ "$ATTEMPT" -lt 5 ] && sleep 30
+  PUBLISH_LAST_ERR=$(head -c 600 /tmp/pub-err.txt 2>/dev/null || echo "")
+  echo "  ⚠️  $PUBLISH_LAST_ERR"
+  [ "$ATTEMPT" -lt 3 ] && sleep 20
 done
 
-rm -rf "$PKG_DIR" "$DEPLOY_ZIP" /tmp/pub-resp.json
+rm -rf "$PKG_DIR" "$DEPLOY_ZIP" /tmp/pub-err.txt
 
 if [ "$PUBLISH_OK" != "1" ]; then
   echo "  ❌ Function App publish failed."
-  if [ "$SCM_BLOCKED" = "1" ]; then
-    echo ""
-    echo "  The SCM endpoint (https://${SCM_HOST}) returned HTTP $HTTP with an HTML body."
-    echo "  This is a NETWORK POLICY block, not a transient error. Common causes:"
-    echo "    - Function App SCM site has IP access restrictions and your egress IP isn't allowlisted"
-    echo "    - A corporate proxy / captive portal is intercepting the request"
-    echo "    - SCM site is on a private endpoint and your machine isn't on the VNet for SCM"
-    echo ""
-    echo "  Options to unblock:"
-    echo "    1) Add your egress IP to the Function App's SCM access restrictions:"
-    echo "         az functionapp config access-restriction add -g $SPOKE_RG -n $FUNC_APP_NAME \\"
-    echo "           --scm-site true --rule-name dev-laptop --priority 100 --ip-address <your-ip>/32"
-    echo "    2) Run this script from a machine that already has SCM access (jumpbox/bastion)"
-    echo "    3) Switch to Run-From-Package via blob URL (manual: upload zip to private storage,"
-    echo "       generate SAS, set WEBSITE_RUN_FROM_PACKAGE=<sas-url>, restart)"
-  fi
+  echo ""
+  echo "  Last error: $PUBLISH_LAST_ERR"
+  echo ""
+  echo "  Common causes & options to unblock:"
+  echo "    1) SCM/deployment endpoint blocked by corporate proxy or IP restrictions."
+  echo "       Add your egress IP to the Function App's SCM access restrictions:"
+  echo "         az functionapp config access-restriction add -g $SPOKE_RG -n $FUNC_APP_NAME \\"
+  echo "           --scm-site true --rule-name dev-laptop --priority 100 --ip-address <your-ip>/32"
+  echo "    2) Run this script from a machine inside the VNet (jumpbox/bastion/VPN)."
+  echo "    3) Switch to Run-From-Package via blob URL (upload zip to private storage,"
+  echo "       generate SAS, set WEBSITE_RUN_FROM_PACKAGE=<sas-url>, restart)."
   exit 1
 fi
 
