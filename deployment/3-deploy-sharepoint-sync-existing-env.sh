@@ -1317,8 +1317,48 @@ if [ "$PUBLISH_OK" != "1" ]; then
   PROXY_TLS_BLOCKED=0
   MANUAL_UPLOAD="${MANUAL_UPLOAD:-0}"
 
+  # Per-command timeouts (seconds). Override via env if needed.
+  # We use GNU `timeout` to bound how long `az storage` can hang on a stuck
+  # TLS handshake / dead proxy. EOF errors return fast on their own; the
+  # timeout is for the silent-hang case (which we've seen with SCM and
+  # could see with blob endpoints too).
+  STG_CONTAINER_TIMEOUT="${STG_CONTAINER_TIMEOUT:-60}"
+  STG_UPLOAD_TIMEOUT="${STG_UPLOAD_TIMEOUT:-600}"   # 10 min for 14MB+ zip
+  STG_SAS_TIMEOUT="${STG_SAS_TIMEOUT:-60}"
+  STG_KEYLIST_TIMEOUT="${STG_KEYLIST_TIMEOUT:-30}"
+
+  # Resolve `timeout` binary — coreutils ships it at /usr/bin/timeout on
+  # MSYS/Git Bash and on Linux; macOS users get it via `brew install coreutils`
+  # as `gtimeout`. If neither exists, fall back to running without a wrapper.
+  if [ -x /usr/bin/timeout ]; then
+    TIMEOUT_BIN=/usr/bin/timeout
+  elif command -v gtimeout >/dev/null 2>&1; then
+    TIMEOUT_BIN=$(command -v gtimeout)
+  elif command -v timeout >/dev/null 2>&1; then
+    # Note: on plain Windows the builtin `timeout.exe` has different semantics
+    # (`/t SECS`) — but Git Bash's PATH puts /usr/bin first so this resolves
+    # to coreutils. We sanity-check by probing --help.
+    if timeout --help 2>&1 | grep -q -- '--preserve-status\|--signal'; then
+      TIMEOUT_BIN=timeout
+    else
+      TIMEOUT_BIN=""
+    fi
+  else
+    TIMEOUT_BIN=""
+  fi
+  if [ -z "$TIMEOUT_BIN" ]; then
+    echo "  ⚠️  GNU 'timeout' not found — storage commands will run without a wall-clock cap."
+    _stg() { "$@"; }
+  else
+    # Use SIGTERM, then SIGKILL after 5s if process is wedged. Exit code 124
+    # means the timeout fired.
+    _stg() { "$TIMEOUT_BIN" --kill-after=5 "$1" "${@:2}"; }
+  fi
+
   is_tls_proxy_error() {
-    # Detect the corp-proxy-mangling-blob-TLS signature
+    # Detect the corp-proxy-mangling-blob-TLS signature.
+    # Exit code 124 from `timeout` also gets routed here so callers treat a
+    # silent hang the same as a TLS reset → switch to manual upload.
     grep -qE 'UNEXPECTED_EOF_WHILE_READING|EOF occurred in violation|SSL.*handshake|certificate verify failed|Connection.*timed.*out|Connection reset by peer|Unable to connect' "$1" 2>/dev/null
   }
 
@@ -1327,24 +1367,31 @@ if [ "$PUBLISH_OK" != "1" ]; then
     PROXY_TLS_BLOCKED=1
   else
     # ── Path A: AAD ─────────────────────────────────────────────────────
-    if az storage container create \
+    if _stg "$STG_CONTAINER_TIMEOUT" az storage container create \
          --account-name "$RFP_STORAGE" --auth-mode login \
          --name "$RFP_CONTAINER" --output none 2>/tmp/stg-err.txt; then
       STG_AUTH_MODE="login"
     else
-      echo "  ⚠️  AAD container create failed:"
-      head -c 400 /tmp/stg-err.txt 2>/dev/null; echo ""
-      if is_tls_proxy_error /tmp/stg-err.txt; then
-        echo "  💡 Detected corporate proxy blocking *.blob.core.windows.net TLS."
-        echo "     ARM (management.azure.com) works through your proxy, but blob"
-        echo "     data-plane endpoints do not. Switching to MANUAL UPLOAD mode."
+      RC=$?
+      if [ "$RC" = "124" ]; then
+        echo "  ⚠️  AAD container create timed out after ${STG_CONTAINER_TIMEOUT}s."
+        echo "     Treating as proxy block → switching to MANUAL UPLOAD."
         PROXY_TLS_BLOCKED=1
       else
+        echo "  ⚠️  AAD container create failed (exit $RC):"
+        head -c 400 /tmp/stg-err.txt 2>/dev/null; echo ""
+        if is_tls_proxy_error /tmp/stg-err.txt; then
+          echo "  💡 Detected corporate proxy blocking *.blob.core.windows.net TLS."
+          echo "     ARM (management.azure.com) works through your proxy, but blob"
+          echo "     data-plane endpoints do not. Switching to MANUAL UPLOAD mode."
+          PROXY_TLS_BLOCKED=1
+        else
         # ── Path B: account key ─────────────────────────────────────────
         echo "  Trying account-key fallback..."
-        STG_KEY=$(az storage account keys list -g "$SPOKE_RG" -n "$RFP_STORAGE" \
+        STG_KEY=$(_stg "$STG_KEYLIST_TIMEOUT" az storage account keys list \
+          -g "$SPOKE_RG" -n "$RFP_STORAGE" \
           --query "[0].value" -o tsv 2>/tmp/stg-err.txt || true)
-        if [ -n "$STG_KEY" ] && az storage container create \
+        if [ -n "$STG_KEY" ] && _stg "$STG_CONTAINER_TIMEOUT" az storage container create \
               --account-name "$RFP_STORAGE" --account-key "$STG_KEY" \
               --name "$RFP_CONTAINER" --output none 2>/tmp/stg-err.txt; then
           STG_AUTH_MODE="key"
@@ -1367,9 +1414,10 @@ if [ "$PUBLISH_OK" != "1" ]; then
           echo "       MANUAL_UPLOAD=1 bash $0 <env-file>"
           exit 1
         fi
-      fi
-    fi
-  fi
+        fi  # close: is_tls_proxy_error vs key-fallback
+      fi    # close: RC=124 vs other failure
+    fi      # close: container create success vs failure
+  fi        # close: MANUAL_UPLOAD=1 vs auto
 
   if [ "$PROXY_TLS_BLOCKED" != "1" ]; then
     # ── Automated upload (Path A or B) ────────────────────────────────────
@@ -1380,16 +1428,20 @@ if [ "$PUBLISH_OK" != "1" ]; then
       STG_AUTH_ARGS=(--account-key "$STG_KEY")
     fi
 
-    echo "  Uploading $(du -h "$DEPLOY_ZIP" | cut -f1) zip to blob storage..."
-    if ! az storage blob upload \
+    echo "  Uploading $(du -h "$DEPLOY_ZIP" | cut -f1) zip to blob storage (timeout ${STG_UPLOAD_TIMEOUT}s)..."
+    if ! _stg "$STG_UPLOAD_TIMEOUT" az storage blob upload \
           --account-name "$RFP_STORAGE" "${STG_AUTH_ARGS[@]}" \
           --container-name "$RFP_CONTAINER" --name "$RFP_BLOB" \
           --file "$DEPLOY_ZIP" --overwrite --output none 2>/tmp/stg-err.txt; then
-      if is_tls_proxy_error /tmp/stg-err.txt; then
+      RC=$?
+      if [ "$RC" = "124" ]; then
+        echo "  ⚠️  Blob upload timed out after ${STG_UPLOAD_TIMEOUT}s — switching to MANUAL UPLOAD."
+        PROXY_TLS_BLOCKED=1
+      elif is_tls_proxy_error /tmp/stg-err.txt; then
         echo "  💡 Upload hit proxy TLS error. Falling back to MANUAL UPLOAD."
         PROXY_TLS_BLOCKED=1
       else
-        echo "  ❌ Blob upload failed:"
+        echo "  ❌ Blob upload failed (exit $RC):"
         head -c 400 /tmp/stg-err.txt 2>/dev/null
         exit 1
       fi
@@ -1402,7 +1454,7 @@ if [ "$PUBLISH_OK" != "1" ]; then
       SAS_EXPIRY=$(date -u -v+6d -v+23H +%Y-%m-%dT%H:%MZ 2>/dev/null || \
                    date -u -d '+6 days 23 hours' +%Y-%m-%dT%H:%MZ 2>/dev/null || \
                    date -u -d '+167 hours' +%Y-%m-%dT%H:%MZ)
-      SAS=$(az storage blob generate-sas \
+      SAS=$(_stg "$STG_SAS_TIMEOUT" az storage blob generate-sas \
         --account-name "$RFP_STORAGE" --auth-mode login --as-user \
         --container-name "$RFP_CONTAINER" --name "$RFP_BLOB" \
         --permissions r --expiry "$SAS_EXPIRY" --https-only -o tsv 2>/tmp/stg-err.txt)
@@ -1410,7 +1462,7 @@ if [ "$PUBLISH_OK" != "1" ]; then
       SAS_EXPIRY=$(date -u -v+10y +%Y-%m-%dT%H:%MZ 2>/dev/null || \
                    date -u -d '+10 years' +%Y-%m-%dT%H:%MZ 2>/dev/null || \
                    date -u -d '+3650 days' +%Y-%m-%dT%H:%MZ)
-      SAS=$(az storage blob generate-sas \
+      SAS=$(_stg "$STG_SAS_TIMEOUT" az storage blob generate-sas \
         --account-name "$RFP_STORAGE" --account-key "$STG_KEY" \
         --container-name "$RFP_CONTAINER" --name "$RFP_BLOB" \
         --permissions r --expiry "$SAS_EXPIRY" --https-only -o tsv 2>/tmp/stg-err.txt)
