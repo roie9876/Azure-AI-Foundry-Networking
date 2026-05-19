@@ -1295,37 +1295,55 @@ if [ "$PUBLISH_OK" != "1" ]; then
   echo "  Container:       $RFP_CONTAINER"
   echo "  Blob:            $RFP_BLOB"
 
-  # Get storage account key (works if caller has Storage Account Contributor
-  # or Reader+Data role with key-list permission). If key listing is blocked
-  # by policy, surface a clear error.
-  STG_KEY=$(az storage account keys list -g "$SPOKE_RG" -n "$RFP_STORAGE" \
-    --query "[0].value" -o tsv 2>/tmp/stg-err.txt || true)
-  if [ -z "$STG_KEY" ]; then
-    echo "  ❌ Could not retrieve storage account key for $RFP_STORAGE."
-    echo "     $(head -c 400 /tmp/stg-err.txt 2>/dev/null)"
-    echo ""
-    echo "     Either grant 'Storage Account Key Operator' on the account, or"
-    echo "     disable the 'allow shared key access = false' policy temporarily."
-    exit 1
-  fi
+  # Auth strategy: prefer AAD (--auth-mode login) over account keys.
+  #
+  # Many enterprises (Clal among them) revoke 'Microsoft.Storage/.../listKeys'
+  # from developers as policy, while still granting them 'Storage Blob Data
+  # Contributor' on the data plane. AAD auth works in that case; account-key
+  # auth does NOT. We try AAD first and fall back to account key only if AAD
+  # is unavailable (rare — typically only on legacy SAs with AAD disabled).
+  STG_AUTH_MODE="login"
+  STG_AUTH_ARGS=(--auth-mode login)
 
-  # Create container (idempotent). --account-key uses the data plane, which
-  # requires the caller's IP to reach the storage account. If the SA has
-  # private endpoints only, run this script from inside the VNet.
-  az storage container create \
-    --account-name "$RFP_STORAGE" --account-key "$STG_KEY" \
-    --name "$RFP_CONTAINER" --output none 2>/tmp/stg-err.txt || {
-      echo "  ❌ Could not create/access container '$RFP_CONTAINER':"
-      head -c 400 /tmp/stg-err.txt 2>/dev/null
+  # Probe AAD access by attempting to create the container. Idempotent.
+  if ! az storage container create \
+        --account-name "$RFP_STORAGE" "${STG_AUTH_ARGS[@]}" \
+        --name "$RFP_CONTAINER" --output none 2>/tmp/stg-err.txt; then
+    echo "  ⚠️  AAD container create failed:"
+    head -c 400 /tmp/stg-err.txt 2>/dev/null
+    echo ""
+    echo "  Trying account-key fallback..."
+    STG_KEY=$(az storage account keys list -g "$SPOKE_RG" -n "$RFP_STORAGE" \
+      --query "[0].value" -o tsv 2>/tmp/stg-err.txt || true)
+    if [ -z "$STG_KEY" ]; then
+      echo "  ❌ Cannot deploy: neither AAD nor account-key access works."
       echo ""
-      echo "     If the storage account is private-endpoint-only, run this"
-      echo "     script from inside the VNet (jumpbox/bastion/VPN)."
+      echo "     Caller: $(az account show --query user.name -o tsv 2>/dev/null)"
+      echo ""
+      echo "     Required (ONE of):"
+      echo "       - 'Storage Blob Data Contributor' on $RFP_STORAGE (preferred), or"
+      echo "       - 'Storage Account Key Operator' on $RFP_STORAGE."
+      echo ""
+      echo "     listKeys error:"
+      head -c 300 /tmp/stg-err.txt 2>/dev/null | sed 's/^/       /'
       exit 1
-    }
+    fi
+    STG_AUTH_MODE="key"
+    STG_AUTH_ARGS=(--account-key "$STG_KEY")
+    # Retry container create with key auth.
+    az storage container create \
+      --account-name "$RFP_STORAGE" "${STG_AUTH_ARGS[@]}" \
+      --name "$RFP_CONTAINER" --output none 2>/tmp/stg-err.txt || {
+        echo "  ❌ Container create failed even with account key:"
+        head -c 400 /tmp/stg-err.txt 2>/dev/null
+        exit 1
+      }
+  fi
+  echo "  Storage auth mode: $STG_AUTH_MODE"
 
   echo "  Uploading $(du -h "$DEPLOY_ZIP" | cut -f1) zip to blob storage..."
   if ! az storage blob upload \
-        --account-name "$RFP_STORAGE" --account-key "$STG_KEY" \
+        --account-name "$RFP_STORAGE" "${STG_AUTH_ARGS[@]}" \
         --container-name "$RFP_CONTAINER" --name "$RFP_BLOB" \
         --file "$DEPLOY_ZIP" --overwrite --output none 2>/tmp/stg-err.txt; then
     echo "  ❌ Blob upload failed:"
@@ -1333,18 +1351,40 @@ if [ "$PUBLISH_OK" != "1" ]; then
     exit 1
   fi
 
-  # Generate read-only SAS valid 10 years (long-lived; FA needs it to fetch
-  # the package on every cold start).
-  SAS_EXPIRY=$(date -u -v+10y +%Y-%m-%dT%H:%MZ 2>/dev/null || \
-               date -u -d '+10 years' +%Y-%m-%dT%H:%MZ 2>/dev/null || \
-               date -u -d '+3650 days' +%Y-%m-%dT%H:%MZ)
-  SAS=$(az storage blob generate-sas \
-    --account-name "$RFP_STORAGE" --account-key "$STG_KEY" \
-    --container-name "$RFP_CONTAINER" --name "$RFP_BLOB" \
-    --permissions r --expiry "$SAS_EXPIRY" --https-only -o tsv 2>/tmp/stg-err.txt)
+  # Generate read-only SAS for the package URL.
+  #   - With AAD auth: user-delegation SAS (UDK). Max lifetime is 7 days per
+  #     Azure policy, but the FA caches the package locally after first
+  #     download, so cold starts within the 7-day window work fine. Every
+  #     re-run of this script mints a fresh SAS, extending the window.
+  #     Requires the caller to have 'generateUserDelegationKey' (included in
+  #     Storage Blob Data Contributor).
+  #   - With account-key auth: account SAS, 10-year expiry (legacy path).
+  if [ "$STG_AUTH_MODE" = "login" ]; then
+    # UDK SAS — max 7 days, use 6d23h to leave a safety margin.
+    SAS_EXPIRY=$(date -u -v+6d -v+23H +%Y-%m-%dT%H:%MZ 2>/dev/null || \
+                 date -u -d '+6 days 23 hours' +%Y-%m-%dT%H:%MZ 2>/dev/null || \
+                 date -u -d '+167 hours' +%Y-%m-%dT%H:%MZ)
+    SAS=$(az storage blob generate-sas \
+      --account-name "$RFP_STORAGE" --auth-mode login --as-user \
+      --container-name "$RFP_CONTAINER" --name "$RFP_BLOB" \
+      --permissions r --expiry "$SAS_EXPIRY" --https-only -o tsv 2>/tmp/stg-err.txt)
+  else
+    SAS_EXPIRY=$(date -u -v+10y +%Y-%m-%dT%H:%MZ 2>/dev/null || \
+                 date -u -d '+10 years' +%Y-%m-%dT%H:%MZ 2>/dev/null || \
+                 date -u -d '+3650 days' +%Y-%m-%dT%H:%MZ)
+    SAS=$(az storage blob generate-sas \
+      --account-name "$RFP_STORAGE" --account-key "$STG_KEY" \
+      --container-name "$RFP_CONTAINER" --name "$RFP_BLOB" \
+      --permissions r --expiry "$SAS_EXPIRY" --https-only -o tsv 2>/tmp/stg-err.txt)
+  fi
   if [ -z "$SAS" ]; then
     echo "  ❌ Could not generate SAS:"
     head -c 400 /tmp/stg-err.txt 2>/dev/null
+    if [ "$STG_AUTH_MODE" = "login" ]; then
+      echo ""
+      echo "     User-delegation SAS requires 'Storage Blob Delegator' or"
+      echo "     'Storage Blob Data Contributor' on $RFP_STORAGE."
+    fi
     exit 1
   fi
 
