@@ -1,6 +1,6 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────────────────────
-# Create new Azure Function App and/or ACA Job for SharePoint sync.
+# Create new Azure Function App and/or ACA Job for SharePoint sync (.NET 10).
 # Resources get timestamped names so you can spin up disposable test instances.
 #
 # Usage:  TARGET={func|aca|both}  ./deploy-new.sh
@@ -28,6 +28,7 @@ SUBSCRIPTION_ID="${SUBSCRIPTION_ID:-}"
 RESOURCE_GROUP="${RESOURCE_GROUP:-rg-sharepoint-sync}"
 LOCATION="${LOCATION:-francecentral}"
 TIMER_SCHEDULE="${TIMER_SCHEDULE:-0 0 2 * * *}"
+TIMER_SCHEDULE_FULL="${TIMER_SCHEDULE_FULL:-0 0 3 * * *}"
 
 # Generate unique names
 RUN_ID="${RUN_ID:-$(date +%Y%m%d%H%M%S)}"
@@ -62,6 +63,7 @@ done
 
 command -v az >/dev/null 2>&1 || { echo "[ERROR] az CLI required" >&2; exit 1; }
 [[ "$TARGET" != "aca" ]] && {
+    command -v dotnet >/dev/null 2>&1 || { echo "[ERROR] dotnet SDK required" >&2; exit 1; }
     command -v func >/dev/null 2>&1 || { echo "[ERROR] func CLI required for Function deploy" >&2; exit 1; }
 }
 
@@ -87,6 +89,7 @@ APP_SETTINGS=(
     "DELETE_ORPHANED_BLOBS=${DELETE_ORPHANED_BLOBS:-false}"
     "DRY_RUN=${DRY_RUN:-false}"
     "SYNC_PERMISSIONS=${SYNC_PERMISSIONS:-false}"
+    "SYNC_PURVIEW_PROTECTION=${SYNC_PURVIEW_PROTECTION:-false}"
     "FORCE_FULL_SYNC=${FORCE_FULL_SYNC:-false}"
     "AZURE_CLIENT_ID=${AZURE_CLIENT_ID:-}"
     "AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET:-}"
@@ -117,7 +120,7 @@ if [[ "$TARGET" = "func" || "$TARGET" = "both" ]]; then
         --account-name "$FUNCTION_STORAGE_ACCOUNT" \
         --auth-mode login --output none
 
-    echo "[INFO] Creating function app (flex consumption, identity-based storage)"
+    echo "[INFO] Creating function app (flex consumption, .NET 10 isolated)"
     az functionapp create \
         --name "$FUNCTION_APP_NAME" \
         --resource-group "$RESOURCE_GROUP" \
@@ -126,7 +129,7 @@ if [[ "$TARGET" = "func" || "$TARGET" = "both" ]]; then
         --deployment-storage-name "$FUNCTION_STORAGE_ACCOUNT" \
         --deployment-storage-container-name "$DEPLOY_CONTAINER" \
         --deployment-storage-auth-type SystemAssignedIdentity \
-        --runtime python --runtime-version 3.11 \
+        --runtime dotnet-isolated --runtime-version 10.0 \
         --functions-version 4 --os-type Linux \
         --assign-identity '[system]' --output none
 
@@ -151,15 +154,15 @@ if [[ "$TARGET" = "func" || "$TARGET" = "both" ]]; then
     echo "[INFO] Configuring app settings"
     az functionapp config appsettings set \
         --name "$FUNCTION_APP_NAME" --resource-group "$RESOURCE_GROUP" \
-        --settings "${APP_SETTINGS[@]}" "TIMER_SCHEDULE=$TIMER_SCHEDULE" \
+        --settings "${APP_SETTINGS[@]}" "TIMER_SCHEDULE=$TIMER_SCHEDULE" "TIMER_SCHEDULE_FULL=$TIMER_SCHEDULE_FULL" \
         --output none
 
-    echo "[INFO] Publishing function code"
+    echo "[INFO] Publishing function code (.NET 10 isolated)"
     cd "$SYNC_DIR"
     MAX_ATTEMPTS=5; ATTEMPT=1
     while true; do
         set +e
-        OUTPUT=$(func azure functionapp publish "$FUNCTION_APP_NAME" --python 2>&1)
+        OUTPUT=$(func azure functionapp publish "$FUNCTION_APP_NAME" --dotnet-isolated 2>&1)
         RC=$?; set -e; echo "$OUTPUT"
 
         [[ $RC -eq 0 ]] && break

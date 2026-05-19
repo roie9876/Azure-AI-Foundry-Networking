@@ -1,21 +1,21 @@
-# Python cache
-__pycache__/
-*.py[cod]
-*$py.class
+# .NET build outputs
+bin/
+obj/
+*.user
+*.suo
+.vs/
 
-# Virtual environments
-.venv/
-venv/
+# Local settings (contains secrets)
+local.settings.json
 
-# Docker
-.dockerignore
-*.tar
-
-# Environment
+# Environment files
 .env
 .env.local
 
-# pytest
-.pytest_cache/
-htmlcov/
-.coverage
+# Delta token cache (graph_delta permissions mode)
+.delta_tokens/
+
+# OS / IDE files
+.DS_Store
+Thumbs.db
+*.swp
