@@ -74,22 +74,7 @@ This guide puts it all in one place.
 
 Before talking about network options, you need to understand that Microsoft Foundry has **four different components**, and each one has separate networking considerations:
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Microsoft Foundry                            │
-│                                                                 │
-│  ┌──────────────┐  ┌──────────────┐  ┌────────────────────────┐│
-│  │ 1. Foundry   │  │ 2. Foundry   │  │ 3. Agent Service       ││
-│  │    Portal    │  │    Resource  │  │    (compute that runs  ││
-│  │    (UI)      │  │    (APIs)    │  │     your agents)       ││
-│  └──────────────┘  └──────────────┘  └────────────────────────┘│
-│                                                                 │
-│  ┌─────────────────────────────────────────────────────────────┐│
-│  │ 4. Dependent Azure Resources                               ││
-│  │    (Storage, Cosmos DB, AI Search, Key Vault, OpenAI, etc.)││
-│  └─────────────────────────────────────────────────────────────┘│
-└─────────────────────────────────────────────────────────────────┘
-```
+![Microsoft Foundry network protection surfaces](docs/images/foundry-components-network-surfaces.png)
 
 | Component | What it is | Network question it raises |
 |-----------|-----------|---------------------------|
