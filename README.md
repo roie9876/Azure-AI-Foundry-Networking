@@ -129,22 +129,7 @@ By default, these communications go over the Azure backbone network using public
 
 Here's where people get confused. Microsoft offers **four different networking approaches**, and they're documented in four separate pages. Here's how they map:
 
-```
-                        ┌──────────────────────────────────────┐
-                        │     INBOUND (to Foundry)             │
-                        │                                      │
-                        │  Option A: Private Link              │
-                        │  Option D: Network Security          │
-                        │            Perimeter (NSP)           │
-                        └──────────────────────────────────────┘
-
-                        ┌──────────────────────────────────────┐
-                        │     OUTBOUND (from Agent compute)    │
-                        │                                      │
-                        │  Option B: BYO VNet Injection (GA)   │
-                        │  Option C: Managed VNet (Preview)    │
-                        └──────────────────────────────────────┘
-```
+![Microsoft Foundry networking options](docs/images/foundry-four-network-options.png)
 
 ### Quick Comparison
 
