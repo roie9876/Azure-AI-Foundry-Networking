@@ -443,16 +443,7 @@ When you deploy a fully private Foundry setup (Scenario 3 / Template 15), all yo
 
 This section explains the two networking mechanisms that control **how Azure AI Search connects to and from other services** in a private deployment. These are often confused because they appear on the same Networking page in the portal — but they solve completely different problems.
 
-```
-                          ┌──────────────────────┐
-      Foundry/OpenAI ───► │   Azure AI Search    │ ───► Azure Storage
-       (INBOUND)          │   (your resource)    │       (OUTBOUND)
-                          └──────────────────────┘
-                          
-      Controlled by:          Controlled by:
-      "Trusted Services"      "Shared Private Access"
-      checkbox                (shared private links)
-```
+![Azure AI Search networking mechanisms: Trusted Services controls inbound access, Shared Private Access controls outbound access](docs/images/ai-search-networking-mechanisms.png)
 
 ### Mechanism 1: Trusted Services Exception (Inbound to AI Search)
 
@@ -515,18 +506,7 @@ A Shared Private Link is a **private endpoint that a PaaS service creates inside
 
 **Think of it this way:** You have Private Endpoints in your VNet so *your* agents can reach AI Search, Storage, etc. But AI Search itself also needs to reach Storage and AI Services — and AI Search doesn't live in your VNet. SPLs give AI Search its *own* private connection to those resources, running entirely on the Azure backbone.
 
-```
-YOUR VNET                                    MICROSOFT-MANAGED
-┌─────────────────────┐                      ┌─────────────────────┐
-│ pe-subnet           │                      │ (invisible to you)  │
-│  PE ─────────────────────► AI Search ─────── SPL ──► Storage     │
-│  PE ─────────────────────► Storage         │ SPL ──► AI Services │
-│  PE ─────────────────────► AI Services     │ SPL ──► AI Services │
-│  PE ─────────────────────► CosmosDB        │ SPL ──► AI Services │
-└─────────────────────┘                      └─────────────────────┘
-  You created these                           AI Search created these
-  They live in YOUR subnet                    They live in MICROSOFT's infra
-```
+![Private Endpoints live in your VNet; Shared Private Links live in Microsoft-managed infrastructure for AI Search outbound access](docs/images/ai-search-private-endpoints-vs-shared-private-links.png)
 
 > **Note:** SPLs are not unique to AI Search. Other Azure PaaS services also support them — see [Does Foundry Have SPLs Too?](#does-foundry-have-spls-too) below.
 
