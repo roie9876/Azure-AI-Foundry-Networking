@@ -185,6 +185,14 @@ Now let's explain each one.
 
 ![Foundry private endpoint networking with trusted services enabled](docs/images/foundry-private-link-disabled-trusted-services.jpeg)
 
+After you create the private endpoint, the **Private endpoint connections** tab shows the customer-owned private endpoint connection for the Foundry account:
+
+![Foundry private endpoint connection](docs/images/foundry-private-endpoint-connection.jpeg)
+
+This private endpoint is the one your VNet uses to reach the Foundry account privately. In the screenshot, `aiservicesrzgn-private-endpoint` is the private endpoint resource in your spoke VNet, and the connection name `aiservicesrzgn-private-endpoint.77c10040...` is the approved connection on the Foundry account.
+
+You may also see service-managed connection records such as `foundry.*`, `openai.*`, or `cog.*` in some environments. Those are created from Microsoft-managed infrastructure and are not the customer-owned private endpoint you deploy for VNet access.
+
 ---
 
 ### Option B: BYO VNet Injection (Outbound Isolation) — GA
