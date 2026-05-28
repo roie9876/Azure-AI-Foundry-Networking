@@ -1,0 +1,70 @@
+<mxfile host="app.diagrams.net" modified="2026-05-28T00:00:00.000Z" agent="GitHub Copilot" version="24.7.17" type="device">
+  <diagram id="ai-search-networking-mechanisms" name="AI Search Networking Mechanisms">
+    <mxGraphModel dx="1422" dy="762" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="650" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="title" value="Azure AI Search has two separate private-network controls" style="text;html=1;fontSize=26;fontStyle=1;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#111827;" parent="1" vertex="1">
+          <mxGeometry x="140" y="28" width="1120" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="subtitle" value="Trusted Services controls inbound access to Search. Shared Private Access controls outbound access from Search." style="text;html=1;fontSize=15;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#4b5563;" parent="1" vertex="1">
+          <mxGeometry x="170" y="70" width="1060" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="inbound-zone" value="INBOUND TO AI SEARCH" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff7ed;strokeColor=#f97316;strokeWidth=3;fontSize=16;fontStyle=1;align=center;verticalAlign=top;spacingTop=14;fontColor=#9a3412;arcSize=8;" parent="1" vertex="1">
+          <mxGeometry x="70" y="130" width="500" height="410" as="geometry" />
+        </mxCell>
+        <mxCell id="outbound-zone" value="OUTBOUND FROM AI SEARCH" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eff6ff;strokeColor=#2563eb;strokeWidth=3;fontSize=16;fontStyle=1;align=center;verticalAlign=top;spacingTop=14;fontColor=#1e3a8a;arcSize=8;" parent="1" vertex="1">
+          <mxGeometry x="830" y="130" width="500" height="410" as="geometry" />
+        </mxCell>
+        <mxCell id="search-card" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#0ea5e9;strokeWidth=3;arcSize=8;shadow=0;" parent="1" vertex="1">
+          <mxGeometry x="600" y="235" width="200" height="190" as="geometry" />
+        </mxCell>
+        <mxCell id="search-icon" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/app_services/Search_Services.svg;" parent="1" vertex="1">
+          <mxGeometry x="668" y="260" width="64" height="64" as="geometry" />
+        </mxCell>
+        <mxCell id="search-label" value="&lt;b&gt;Azure AI Search&lt;/b&gt;&lt;br&gt;Private deployment&lt;br&gt;Public access disabled" style="text;html=1;fontSize=15;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#111827;" parent="1" vertex="1">
+          <mxGeometry x="615" y="334" width="170" height="66" as="geometry" />
+        </mxCell>
+        <mxCell id="foundry-icon" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/ai_machine_learning/AI_Studio.svg;" parent="1" vertex="1">
+          <mxGeometry x="170" y="220" width="64" height="64" as="geometry" />
+        </mxCell>
+        <mxCell id="openai-icon" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/ai_machine_learning/Azure_OpenAI.svg;" parent="1" vertex="1">
+          <mxGeometry x="290" y="220" width="64" height="64" as="geometry" />
+        </mxCell>
+        <mxCell id="trusted-label" value="&lt;b&gt;Foundry / Azure OpenAI&lt;/b&gt;&lt;br&gt;Queries indexes for RAG&lt;br&gt;using managed identity" style="text;html=1;fontSize=15;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#111827;" parent="1" vertex="1">
+          <mxGeometry x="125" y="300" width="275" height="66" as="geometry" />
+        </mxCell>
+        <mxCell id="identity-icon" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/identity/Managed_Identities.svg;" parent="1" vertex="1">
+          <mxGeometry x="420" y="242" width="42" height="42" as="geometry" />
+        </mxCell>
+        <mxCell id="trusted-box" value="&lt;b&gt;Controlled by&lt;/b&gt;&lt;br&gt;Trusted Services checkbox&lt;br&gt;+ Entra ID RBAC" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffedd5;strokeColor=#fb923c;fontSize=14;align=center;verticalAlign=middle;fontColor=#7c2d12;arcSize=8;" parent="1" vertex="1">
+          <mxGeometry x="150" y="405" width="260" height="82" as="geometry" />
+        </mxCell>
+        <mxCell id="storage-icon" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/storage/Storage_Accounts.svg;" parent="1" vertex="1">
+          <mxGeometry x="960" y="205" width="58" height="58" as="geometry" />
+        </mxCell>
+        <mxCell id="cog-icon" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/ai_machine_learning/Cognitive_Services.svg;" parent="1" vertex="1">
+          <mxGeometry x="1115" y="205" width="58" height="58" as="geometry" />
+        </mxCell>
+        <mxCell id="targets-label" value="&lt;b&gt;Dependent resources&lt;/b&gt;&lt;br&gt;Storage, AI Services,&lt;br&gt;embedding models, skills" style="text;html=1;fontSize=15;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#111827;" parent="1" vertex="1">
+          <mxGeometry x="935" y="285" width="270" height="72" as="geometry" />
+        </mxCell>
+        <mxCell id="private-link-icon" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/networking/Private_Link.svg;" parent="1" vertex="1">
+          <mxGeometry x="885" y="307" width="46" height="46" as="geometry" />
+        </mxCell>
+        <mxCell id="spl-box" value="&lt;b&gt;Controlled by&lt;/b&gt;&lt;br&gt;Shared Private Access&lt;br&gt;Shared Private Links" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dbeafe;strokeColor=#60a5fa;fontSize=14;align=center;verticalAlign=middle;fontColor=#1e3a8a;arcSize=8;" parent="1" vertex="1">
+          <mxGeometry x="960" y="405" width="260" height="82" as="geometry" />
+        </mxCell>
+        <mxCell id="inbound-edge" value="Inbound trusted-service request" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#f97316;strokeWidth=3;endArrow=block;endFill=1;fontColor=#9a3412;fontSize=13;" parent="1" source="identity-icon" target="search-card" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="outbound-edge" value="Outbound private connection" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2563eb;strokeWidth=3;endArrow=block;endFill=1;fontColor=#1e3a8a;fontSize=13;" parent="1" source="search-card" target="private-link-icon" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="footer" value="Same AI Search Networking page, different direction, different mechanism." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f9fafb;strokeColor=#d1d5db;fontSize=14;align=center;verticalAlign=middle;fontColor=#374151;arcSize=8;" parent="1" vertex="1">
+          <mxGeometry x="445" y="565" width="510" height="46" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
