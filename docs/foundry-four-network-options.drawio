@@ -46,7 +46,7 @@
         <mxCell id="byo-vnet-card" value="&lt;b&gt;Option B: BYO VNet Injection&lt;/b&gt;&lt;br&gt;GA&lt;br&gt;&lt;br&gt;Agents run in your VNet subnets" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#f97316;strokeWidth=2;fontSize=15;align=center;verticalAlign=middle;fontColor=#111827;arcSize=8;" parent="1" vertex="1">
           <mxGeometry x="390" y="490" width="300" height="120" as="geometry" />
         </mxCell>
-        <mxCell id="managed-vnet-card" value="&lt;b&gt;Option C: Managed VNet&lt;/b&gt;&lt;br&gt;Preview&lt;br&gt;&lt;br&gt;Microsoft-managed VNet for simpler agent egress" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#f97316;strokeWidth=2;fontSize=15;align=center;verticalAlign=middle;fontColor=#111827;arcSize=8;" parent="1" vertex="1">
+        <mxCell id="managed-vnet-card" value="&lt;b&gt;Option C: Managed VNet&lt;/b&gt;&lt;br&gt;GA&lt;br&gt;&lt;br&gt;Microsoft-managed VNet for simpler agent egress" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#f97316;strokeWidth=2;fontSize=15;align=center;verticalAlign=middle;fontColor=#111827;arcSize=8;" parent="1" vertex="1">
           <mxGeometry x="835" y="490" width="330" height="120" as="geometry" />
         </mxCell>
         <mxCell id="outbound-choice" value="choose one egress model" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#64748b;strokeWidth=2;fontSize=12;fontColor=#475569;endArrow=classic;endFill=1;labelBackgroundColor=#fff7ed;dashed=1;" parent="1" source="byo-vnet-card" target="managed-vnet-card" edge="1">
