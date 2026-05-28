@@ -183,7 +183,7 @@ Now let's explain each one.
 | Azure AI Search | `Microsoft.Search` |
 | Azure Machine Learning | `Microsoft.MachineLearningServices` |
 
-![Foundry Portal Firewall Settings](docs/images/foundry-portal-firewall.png)
+![Foundry private endpoint networking with trusted services enabled](docs/images/foundry-private-link-disabled-trusted-services.jpeg)
 
 ---
 
