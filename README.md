@@ -1,6 +1,6 @@
 # Microsoft Foundry Networking — The Complete Guide
 
-> **Updated April 2026** — Covers all networking options for Microsoft Foundry (formerly Azure AI Foundry), including Private Link, Managed VNet, BYO VNet injection, and Network Security Perimeter.
+> **Updated May 2026** — Covers all networking options for Microsoft Foundry (formerly Azure AI Foundry), including Private Link, Managed VNet, BYO VNet injection, and Network Security Perimeter.
 
 [![Deploy To Azure](https://raw.githubusercontent.com/Azure/azure-quickstart-templates/master/1-CONTRIBUTION-GUIDE/images/deploytoazure.svg?sanitize=true)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Froie9876%2FAzure-AI-Foundry-Networking%2Frefs%2Fheads%2Fmain%2Fbicep%2Fazuredeploy.json)
 
@@ -19,7 +19,7 @@
 - [Part 3: The Four Network Options](#part-3-the-four-network-options-and-when-to-use-each)
   - [Option A: Private Link (Inbound)](#option-a-private-link-inbound-isolation--ga)
   - [Option B: BYO VNet Injection (Outbound)](#option-b-byo-vnet-injection-outbound-isolation--ga)
-  - [Option C: Managed VNet (Outbound)](#option-c-managed-vnet-outbound-isolation--preview)
+  - [Option C: Managed VNet (Outbound)](#option-c-managed-vnet-outbound-isolation--ga)
   - [Option D: Network Security Perimeter](#option-d-network-security-perimeter-nsp--preview)
 - [Part 4: Decision Guide](#part-4-how-it-all-fits-together--decision-guide)
 - [Part 5: Agent Setup Tiers](#part-5-agent-setup-tiers--when-do-you-provide-resources)
@@ -136,12 +136,12 @@ Here's where people get confused. Microsoft offers **four different networking a
 | | **Option A: Private Link** | **Option B: BYO VNet Injection** | **Option C: Managed VNet** | **Option D: NSP** |
 |---|---|---|---|---|
 | **What it secures** | Inbound access to Foundry | Outbound from Agent compute | Outbound from Agent compute | Inbound + Outbound (data-plane) |
-| **Status** | GA | GA | **Preview** | **Preview** |
+| **Status** | GA | GA | GA | **Preview** |
 | **Complexity** | Low | Medium-High | Low-Medium | Medium |
 | **Who manages the network** | You create PE in your VNet | You provide VNet + subnets | Microsoft manages the VNet | Microsoft manages the perimeter |
 | **Agent runs in** | N/A (inbound only) | Your VNet subnet | Microsoft-managed VNet | N/A (policy layer) |
 | **Can reach on-prem** | N/A | Yes (agents are in your VNet) | Via Application Gateway only | N/A |
-| **Your own firewall** | N/A | Yes | No (Microsoft-managed FW) | N/A |
+| **Your own firewall** | N/A | Yes | No — Microsoft-managed firewall only | N/A |
 | **Use it when** | You need private access to the portal/APIs | Full network control, compliance, on-prem access | Simpler setup, no own VNet needed | You want a policy-based perimeter across multiple Azure services |
 | **Docs** | [Private Link](https://learn.microsoft.com/en-us/azure/foundry/how-to/configure-private-link?view=foundry) | [VNet for Agents](https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/virtual-networks) | [Managed VNet](https://learn.microsoft.com/en-us/azure/foundry/how-to/managed-virtual-network?view=foundry) | [NSP](https://learn.microsoft.com/en-us/azure/foundry/how-to/add-foundry-to-network-security-perimeter?view=foundry) |
 
@@ -240,13 +240,13 @@ You may also see service-managed connection records such as `foundry.*`, `openai
 
 ---
 
-### Option C: Managed VNet (Outbound Isolation) — Preview
+### Option C: Managed VNet (Outbound Isolation) — GA
 
 **What it does:** Microsoft creates and manages a virtual network **for you**. Your agents run in this Microsoft-managed VNet. You don't provide a VNet or subnets — Microsoft handles it all.
 
 **Think of it like:** Option B is "bring your own house, we'll move in." Option C is "we'll build the house for you, you just tell us the rules."
 
-> ⚠️ **This is currently in Preview** — not recommended for production. If your enterprise doesn't allow preview features, use Option B instead.
+> **Current status:** Managed VNet is no longer documented as preview. It is generally available, but it still has important limitations: no Azure portal creation UI yet, limited regions, no bring-your-own firewall, and no outbound traffic logging support yet.
 
 ![Managed VNet Overview](docs/images/diagram-managed-network.png)
 
@@ -265,23 +265,23 @@ You may also see service-managed connection records such as `foundry.*`, `openai
 | | Managed VNet (Option C) | BYO VNet Injection (Option B) |
 |---|---|---|
 | Who creates the VNet | Microsoft | You |
-| Your firewall | No — managed firewall auto-created | Yes — bring your own |
-| On-premises access | Via Application Gateway only | Native (agents are in your VNet) |
-| Evaluation compute security | Not supported | Supported |
-| MCP tools with network isolation | Not supported (public MCP only) | Supported (private MCP) |
-| Logging outbound traffic | Not supported | Supported (your firewall) |
-| Status | **Preview** | **GA** |
-| Deploy via | Bicep template only | Portal, Bicep, or Terraform |
+| Your firewall | No BYO firewall. Microsoft-managed Azure Firewall is created for FQDN outbound rules in Allow Only Approved Outbound mode | Yes — bring your own firewall and UDRs |
+| On-premises access | Via Application Gateway only (L4 and L7 supported) | Native (agents are in your VNet) |
+| Evaluation compute security | Supported with required outbound rules, but less network visibility than BYO | Supported with your own network controls |
+| Private MCP tools | Not supported through the Managed VNet pattern; private MCP requires Standard Agent Setup with private networking and a dedicated MCP subnet | Supported with dedicated MCP subnet |
+| Logging outbound traffic | Not supported yet | Supported through your firewall / network logs |
+| Status | **GA** | **GA** |
+| Deploy via | Bicep, Terraform, Azure CLI / `az rest`; no portal creation UI yet | Portal, Bicep, or Terraform |
 
 **Managed VNet limitations:**
-- Bicep-only deployment ([18-managed-virtual-network-preview](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/18-managed-virtual-network-preview))
-- Can't bring your own firewall
+- Deployment via [Bicep](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/18-managed-virtual-network), [Terraform](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-terraform/18-managed-virtual-network), or Azure CLI / `az rest`; no Azure portal creation UI yet
+- Can't bring your own firewall; Microsoft creates a managed Azure Firewall for FQDN outbound rules in Allow Only Approved Outbound mode
+- No outbound traffic logging support yet
 - Can't switch back to no isolation once enabled
 - FQDN rules only support ports 80 and 443
-- Private endpoints to Cosmos DB and AI Search must be created manually via CLI
+- Managed private endpoints to Cosmos DB, Storage, AI Search, Key Vault, and other dependencies are created as managed outbound rules; they do not create customer-visible NICs in your subscription
 - Each Foundry account gets its own managed firewall (can't share)
-- Preview regions only
-- Requires feature flag registration: `az feature register --namespace Microsoft.CognitiveServices --name AI.ManagedVnetPreview`
+- Supported regions only; additional region support may roll out over time
 
 ---
 
@@ -362,10 +362,10 @@ Here's the practical guide: **which options do you combine for your scenario?**
 - **Agent tier:** Standard
 - **Inbound:** Option A (Private Link)
 - **Outbound:** Option C (Managed VNet) — Microsoft manages the VNet
-- **Options used:** A + C *(Preview)*
-- **Template:** [18-managed-virtual-network-preview](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/18-managed-virtual-network-preview)
+- **Options used:** A + C
+- **Template:** [18-managed-virtual-network](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/18-managed-virtual-network)
 
-> ⚠️ **Preview.** Agent compute runs in a Microsoft-managed VNet (not your VNet). You don't see or manage the network — Microsoft handles it. Some limitations: no private MCP, no evaluation compute isolation, no custom firewall.
+> Agent compute runs in a Microsoft-managed VNet (not your VNet). You don't see or manage the network — Microsoft handles it. Some limitations remain: no private MCP pattern, no custom firewall, and no outbound traffic logging support yet.
 
 ### Scenario 5: "Full lockdown + private MCP servers or on-prem data"
 - **Agent tier:** Standard + BYO VNet
@@ -752,10 +752,7 @@ az provider register --namespace 'Microsoft.ContainerService'
 az provider register --namespace 'Microsoft.Bing'
 ```
 
-For Managed VNet (Preview), also register the feature flag:
-```bash
-az feature register --namespace Microsoft.CognitiveServices --name AI.ManagedVnetPreview
-```
+Managed VNet no longer requires the old `AI.ManagedVnetPreview` feature flag in current Microsoft Learn guidance.
 
 ---
 
@@ -851,7 +848,7 @@ Do you need network isolation?
            └── No ──► You need full outbound isolation too.
                       │
                       ├── Want Microsoft to manage the VNet?
-                      │   └── 18-managed-virtual-network-preview ⚠️ PREVIEW
+                      │   └── 18-managed-virtual-network
                       │
                       ├── Want to manage your own VNet?
                       │   │
@@ -883,7 +880,7 @@ Do you need network isolation?
 | **15** | [private-network-standard-agent-setup](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/15-private-network-standard-agent-setup) | Standard | SMI | **Full E2E** | BYO VNet + all private endpoints | **GA** |
 | **16** | [private-network-standard-agent-apim-setup](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/16-private-network-standard-agent-apim-setup-preview) | Standard | SMI | **Full E2E** | + Azure API Management integration | **Preview** |
 | **17** | [private-network-standard-UAI-agent-setup](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/17-private-network-standard-user-assigned-identity-agent-setup) | Standard | **UAI** | **Full E2E** | User Assigned Identity instead of SMI | GA |
-| **18** | [managed-virtual-network-preview](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/18-managed-virtual-network-preview) | Standard | SMI | **Managed VNet** | Microsoft manages the VNet for you | **Preview** |
+| **18** | [managed-virtual-network](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/18-managed-virtual-network) | Standard | SMI | **Managed VNet** | Microsoft manages the VNet for you | **GA** |
 | **19** | [hybrid-private-resources-agent-setup](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/19-hybrid-private-resources-agent-setup) | Standard | SMI | **Full E2E** | + MCP servers + on-prem data + 3 subnets | GA |
 | **30** | [customer-managed-keys](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/30-customer-managed-keys) | — | SMI | — | CMK encryption | GA |
 | **31** | [CMK-standard-agent](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/31-customer-managed-keys-standard-agent) | Standard | SMI | — | CMK + Standard agent | GA |
@@ -922,7 +919,7 @@ Here's where each doc fits (so you don't get lost again):
 |-----|--------|---------|
 | [Configure Private Link](https://learn.microsoft.com/en-us/azure/foundry/how-to/configure-private-link?view=foundry) | **Inbound** access + overall network planning | Option A |
 | [Virtual Networks for Agents](https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/virtual-networks) | **Outbound** — BYO VNet injection for Agent Service | Option B |
-| [Managed Virtual Network](https://learn.microsoft.com/en-us/azure/foundry/how-to/managed-virtual-network?view=foundry) | **Outbound** — Microsoft-managed VNet (Preview) | Option C |
+| [Managed Virtual Network](https://learn.microsoft.com/en-us/azure/foundry/how-to/managed-virtual-network?view=foundry) | **Outbound** — Microsoft-managed VNet | Option C |
 | [Network Security Perimeter](https://learn.microsoft.com/en-us/azure/foundry/how-to/add-foundry-to-network-security-perimeter?view=foundry) | **Policy-based** inbound + outbound (Preview) | Option D |
 | [Environment Setup](https://learn.microsoft.com/en-us/azure/foundry/agents/environment-setup) | Agent setup tiers (Basic / Standard / Standard+VNet) | Tier choice |
 | [Standard Agent Setup](https://learn.microsoft.com/en-us/azure/foundry/agents/concepts/standard-agent-setup) | BYO resources (Cosmos DB, Storage, AI Search) details | Standard tier |
