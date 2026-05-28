@@ -430,6 +430,8 @@ If you dig into the Azure portal or use the REST API, you will encounter an obje
 * **What is it?** The Capability Host is the underlying infrastructure engine that actually runs your AI agents. It acts as the bridge that binds your agent code to your BYO data resources (Cosmos DB, Storage, AI Search) and the LLM models. 
 * **Why it matters for networking:** When you use **Option B (BYO VNet Injection)**, the Capability Host is the actual physical resource component that gets injected into your delegated `Agent Subnet`.
 
+![Capability Host injected into a delegated Agent Subnet and connecting agent code to BYO data resources and LLM models](docs/images/capability-host.png)
+
 > **💡 Pro Tip: Stuck Deletions & Cleanups** 
 > Capability hosts are **immutable**. If you change your network setup, you must delete the capability host and recreate it. Occasionally, a capability host can get "stuck" in a deleting or failed state, making it impossible to delete from the UI (which can prevent you from dropping or changing your subnets). 
 > 
