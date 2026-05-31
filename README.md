@@ -239,6 +239,26 @@ You may also see service-managed connection records such as `foundry.*`, `openai
 
 > **Template 19 update:** Template 19 is not a separate networking option. It is the Option B / Standard BYO VNet pattern extended with a third subnet and Data Proxy / Tool Server routing for private agent tools behind the VNet.
 
+**What can you bring existing vs what gets created from zero?**
+
+For this repo's modified Template 15 in `bicep/`, the split is:
+
+| Resource | Can you use existing? | Parameter | If omitted | Important notes |
+|---|---:|---|---|---|
+| Foundry / AI Services account | ❌ No | `aiServices` is a name prefix only | Creates a new `Microsoft.CognitiveServices/accounts` resource | Existing Foundry account reuse is not supported by this repo's Bicep because the template creates the account with `networkInjections` configured. |
+| Foundry project | ❌ No | `firstProjectName` is a name prefix only | Creates a new project under the new account | The project gets a system-assigned managed identity and resource connections. |
+| Model deployment | ❌ No | `modelName`, `modelVersion`, `modelSkuName`, `modelCapacity` | Creates a deployment under the new account | Use quota/capacity checks before deployment. |
+| Virtual Network | ✅ Yes | `existingVnetResourceId` | Creates a new VNet | With an existing VNet, this repo creates or updates the named `agent-subnet` and `pe-subnet` inside it. |
+| Agent subnet | ⚠️ Name/prefix only | `agentSubnetName`, `agentSubnetPrefix` | Creates `agent-subnet` | There is no `existingAgentSubnetResourceId` in this repo's Template 15. The module writes the subnet definition, delegation, `defaultOutboundAccess: false`, and optional UDR. |
+| Private endpoint subnet | ⚠️ Name/prefix only | `peSubnetName`, `peSubnetPrefix` | Creates `pe-subnet` | There is no `existingPeSubnetResourceId` in this repo's Template 15. The module writes the subnet definition. |
+| Azure Storage account | ✅ Yes | `azureStorageAccountResourceId` | Creates a new Storage account | This is the Storage account resource, not an individual blob container. Capability Host and later workloads create/use containers inside it. |
+| Azure AI Search service | ✅ Yes | `aiSearchResourceId` | Creates a new AI Search service | This is the Search service resource, not a specific index. Indexes/knowledge sources are configured later. |
+| Azure Cosmos DB account | ✅ Yes | `azureCosmosDBAccountResourceId` | Creates a new Cosmos DB account | Required for Standard agent thread/message/entity storage. |
+| Private DNS zones | ✅ Yes | `existingDnsZones` + `dnsZonesSubscriptionId` | Creates/uses zones according to the mapping | In this repo, `existingDnsZones` maps zone name to resource group name. |
+| Private endpoints | ❌ No | Derived from target resources and `pe-subnet` | Creates new private endpoints | Even when Storage/Search/Cosmos are existing resources, the template creates private endpoints to them in your PE subnet. |
+
+> **Short version:** You can bring existing Storage, AI Search, Cosmos DB, VNet, and DNS zones. You cannot bring an existing Foundry account/project with this repo's current Bicep; those are created from zero.
+
 **Add a firewall** with hub-and-spoke if you need egress control:
 
 ![Hub-and-Spoke Firewall Configuration](docs/images/network-hub-spoke-diagram.png)
@@ -1071,13 +1091,19 @@ Fill in these key parameters:
 | Parameter | Value |
 |-----------|-------|
 | **Location** | Same as your spoke (e.g., `swedencentral`) |
+| **Ai Services** | Name prefix for the new Foundry / AI Services account. This is not an existing account name. |
 | **Vnet Name** | `spoke-vnet` |
 | **Agent Subnet Name / Prefix** | `agent-subnet` / `10.100.3.0/24` |
 | **Pe Subnet Name / Prefix** | `pe-subnet` / `10.100.4.0/24` |
 | **Existing Vnet Resource Id** | Full resource ID of your spoke VNet |
+| **Ai Search Resource Id** | Optional full ARM ID of an existing AI Search service. Leave empty to create a new one. |
+| **Azure Storage Account Resource Id** | Optional full ARM ID of an existing Storage account. Leave empty to create a new one. |
+| **Azure Cosmos DB Account Resource Id** | Optional full ARM ID of an existing Cosmos DB account. Leave empty to create a new one. |
 | **Firewall Private Ip** | Your firewall's private IP (e.g., `10.0.1.4`) |
 | **Dns Zones Subscription Id** | Your subscription ID |
 | **Existing Dns Zones** | JSON mapping zone names → hub resource group name |
+
+> **Existing Foundry account?** Not with this repo's current `bicep/` template. It creates a new Foundry / AI Services account, project, model deployment, project connections, capability host, and role assignments. Reusing an existing Foundry account would require a separate Bicep path that references the account as `existing` and only creates/updates the project-side resources.
 
 **`existingDnsZones` example:**
 ```json
