@@ -177,6 +177,8 @@ Now let's explain each one.
 
 **Trusted Azure services** can bypass the firewall if you enable it — they authenticate via managed identity:
 
+> **Ref:** [Grant access to trusted Azure services](https://learn.microsoft.com/en-us/azure/foundry/how-to/configure-private-link?view=foundry&WT.mc_id=Portal-Microsoft_Azure_ProjectOxford#grant-access-to-trusted-azure-services)
+
 | Service | Resource Provider |
 |---------|------------------|
 | Foundry Tools | `Microsoft.CognitiveServices` |
@@ -211,6 +213,7 @@ You may also see service-managed connection records such as `foundry.*`, `openai
 |--------|-------------|------|
 | **Agent Subnet** | Your agents run here. Delegated to `Microsoft.App/environments`. Microsoft injects the agent container. | `/24` recommended (256 IPs), `/27` minimum |
 | **Private Endpoint Subnet** | Private endpoints for Storage, Cosmos DB, AI Search, Foundry Account. Each gets a private IP. | Sized per number of endpoints |
+| **Tools / MCP Subnet** | Optional in Template 19. Hosts private Container Apps-based MCP servers, OpenAPI services, A2A agents, and other private tool endpoints. | `/24` recommended |
 
 **How traffic flows:**
 - Agent code runs in the agent subnet → calls Azure Storage → goes through the private endpoint in the PE subnet → reaches Storage over private IP. Never touches the public internet.
@@ -232,7 +235,9 @@ You may also see service-managed connection records such as `foundry.*`, `openai
 **Deployment:** Use the Bicep or Terraform templates — they create everything:
 - **Bicep:** [15-private-network-standard-agent-setup](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/15-private-network-standard-agent-setup)
 - **Terraform:** [15b-private-network-standard-agent-setup-byovnet](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-terraform/15b-private-network-standard-agent-setup-byovnet)
-- **Hybrid/on-prem:** [19-hybrid-private-resources-agent-setup](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/19-hybrid-private-resources-agent-setup)
+- **Private agent tools behind VNet:** [19-private-network-agent-tools](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/19-private-network-agent-tools)
+
+> **Template 19 update:** Template 19 is not a separate networking option. It is the Option B / Standard BYO VNet pattern extended with a third subnet and Data Proxy / Tool Server routing for private agent tools behind the VNet.
 
 **Add a firewall** with hub-and-spoke if you need egress control:
 
@@ -367,14 +372,14 @@ Here's the practical guide: **which options do you combine for your scenario?**
 
 > Agent compute runs in a Microsoft-managed VNet (not your VNet). You don't see or manage the network — Microsoft handles it. Some limitations remain: no private MCP pattern, no custom firewall, and no outbound traffic logging support yet.
 
-### Scenario 5: "Full lockdown + private MCP servers or on-prem data"
+### Scenario 5: "Full lockdown + private agent tools behind VNet"
 - **Agent tier:** Standard + BYO VNet
 - **Inbound:** Option A (Private Link)
-- **Outbound:** Option B (BYO VNet Injection) + MCP subnet
+- **Outbound:** Option B (BYO VNet Injection) + tools / MCP subnet
 - **Options used:** A + B
-- **Template:** [19-hybrid-private-resources-agent-setup](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/19-hybrid-private-resources-agent-setup)
+- **Template:** [19-private-network-agent-tools](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/19-private-network-agent-tools)
 
-> Uses 3 subnets: agent subnet, PE subnet, and an MCP subnet for hosting private MCP servers accessible by the agent.
+> Uses 3 subnets: agent subnet, PE subnet, and a tools / MCP subnet for hosting private MCP servers, OpenAPI services, A2A agents, Azure Function helper services, and other private tool endpoints.
 
 ---
 
@@ -429,6 +434,8 @@ If you dig into the Azure portal or use the REST API, you will encounter an obje
 
 * **What is it?** The Capability Host is the underlying infrastructure engine that actually runs your AI agents. It acts as the bridge that binds your agent code to your BYO data resources (Cosmos DB, Storage, AI Search) and the LLM models. 
 * **Why it matters for networking:** When you use **Option B (BYO VNet Injection)**, the Capability Host is the actual physical resource component that gets injected into your delegated `Agent Subnet`.
+
+For private tools behind a VNet, the Capability Host is only part of the story. Tool calls such as MCP, OpenAPI, and A2A can also route through Foundry-managed **Data Proxy / Tool Server** infrastructure that is configured with the same network injection. That is what Template 19 adds on top of the baseline Template 15 deployment.
 
 ![Capability Host injected into a delegated Agent Subnet and connecting agent code to BYO data resources and LLM models](docs/images/capability-host.png)
 
@@ -593,6 +600,12 @@ The concept is identical: Foundry (like AI Search) is a managed PaaS service tha
 - They reach Storage, AI Search, CosmosDB, AI Services via the Private Endpoints in your `pe-subnet`
 - No SPLs needed on Foundry — the agents *are* in your network
 
+**In a private agent tools deployment (Option B / Template 19):**
+- The baseline agent runtime still uses the `agent-subnet` and private endpoints as above
+- Private tools run in a separate tools / MCP subnet, commonly on an internal Azure Container Apps environment
+- MCP, OpenAPI, and A2A tool calls can route through Foundry Data Proxy / Tool Server infrastructure that is VNet-aware for the configured network injection
+- This is not an AI Search SPL. It is a Foundry agent-tool routing path for private tool endpoints behind your VNet
+
 **In a Managed VNet deployment (Option C):**
 - Your agents run in a Microsoft-managed VNet (invisible to you)
 - Foundry creates **managed private endpoints** (outbound rules) from its managed VNet to your resources
@@ -605,29 +618,31 @@ The concept is identical: Foundry (like AI Search) is a managed PaaS service tha
 
 ## Part 6: Agent Tools — Network Support Matrix
 
-Not all agent tools work behind a VNet. Here's the current status:
+Not all agent tools work behind a VNet. The key update from Template 19 is that several tool types that used to be unavailable now work when you use the private agent tools pattern.
 
-| Tool | Works in VNet? | Traffic path |
-|------|---------------|-------------|
-| MCP Tool (Private MCP) | ✅ Yes | Through your VNet subnet |
-| Azure AI Search | ✅ Yes | Through private endpoint |
+| Tool | Works in VNet? | Traffic path / requirement |
+|------|---------------|----------------------------|
+| MCP Tool (Private MCP) | ✅ Yes | Template 19; Streamable HTTP MCP endpoint in tools / MCP subnet, routed by Data Proxy / Tool Server |
+| Azure AI Search | ✅ Yes | Through private endpoint / Data Proxy path |
 | Code Interpreter | ✅ Yes | Microsoft backbone (no config needed) |
 | Function Calling | ✅ Yes | Microsoft backbone (no config needed) |
 | Bing Grounding | ✅ Yes | Public internet* |
 | Websearch | ✅ Yes | Public internet* |
 | SharePoint Grounding | ✅ Yes | Public internet* |
 | Foundry IQ (preview) | ✅ Yes | Via MCP |
-| Fabric Data Agent | ❌ No | — |
+| OpenAPI tool | ✅ Yes | Template 19 private OpenAPI service behind VNet; Data Proxy feature path |
+| Agent-to-Agent (A2A) | ✅ Yes | Template 19 private A2A endpoint with project connection |
+| Azure Functions | ⚠️ Partial | DataProxy-compatible when the function keeps public access enabled and uses VNet Integration for outbound private resource access |
+| Fabric Data Agent | ⚠️ Partial / preview | Template 19 includes private Fabric workspace connectivity, but validate in your tenant; sample testing marks Fabric as pending |
 | Logic Apps | ❌ No | — |
 | File Search | ❌ No | Under development |
-| OpenAPI tool | ❌ No | Under development |
-| Azure Functions | ❌ No | Under investigation |
 | Browser Automation | ❌ No | Under investigation |
 | Computer Use | ❌ No | Under investigation |
 | Image Generation | ❌ No | Under investigation |
-| Agent-to-Agent (A2A) | ❌ No | Under development |
 
 *Bing, Websearch, and SharePoint use the public internet even in VNet-isolated setups. Block via Azure Policy if needed.
+
+> **Azure Functions nuance:** "Behind a VNet" has two meanings. A Function App with VNet Integration can reach private backends while still exposing a public function endpoint, which is the practical Foundry OpenAPI tool pattern. A Function App with a private endpoint and `publicNetworkAccess: Disabled` is for callers already on the VNet; Foundry Data Proxy traffic does not arrive through that private endpoint and can be rejected with `403 Ip Forbidden`.
 
 > **SharePoint & AI Search connectivity in hub-spoke:** If you use an AI Search **SharePoint Online indexer**, the traffic from AI Search to SharePoint goes via the **Microsoft Graph API on the Microsoft backbone network**. It does **not** flow through your VNet, UDR, or Azure Firewall. This means SharePoint indexers work regardless of your network topology — no firewall rules, no private endpoints, no SPL needed for SharePoint.
 
@@ -644,6 +659,8 @@ Not all agent tools work behind a VNet. Here's the current status:
 | Workflow Agents | ⚠️ Partial | Inbound works. Outbound VNet injection not supported |
 | AI Gateway | ⚠️ Partial | Auto-public. Needs its own network isolation |
 | MCP tools + Managed VNet | ❌ Not supported | Use BYO VNet (Option B) for private MCP |
+| OpenAPI / A2A tools + Managed VNet | ❌ Not supported | Use Template 19 / BYO VNet for private tool endpoints |
+| Azure Functions as tools | ⚠️ Partial | DataProxy-compatible with VNet Integration outbound; full private endpoint lockdown is not compatible |
 | Evaluation compute + Managed VNet | ❌ Not supported | Use BYO VNet (Option B) |
 
 ---
@@ -657,6 +674,7 @@ Not all agent tools work behind a VNet. Here's the current status:
 - **Same subscription:** Private endpoints must match the VNet subscription
 - **Capability hosts are immutable:** Can't update after creation — delete and recreate
 - **Managed VNet is one-way:** Once enabled, can't disable or switch modes
+- **Template 19 tools subnet:** Private agent tools require the extra tools / MCP subnet and private DNS for the internal tool-hosting environment
 - **File Search + Blob Storage:** Not supported behind VNet
 
 ---
@@ -730,6 +748,8 @@ az provider register --namespace 'Microsoft.Search'
 az provider register --namespace 'Microsoft.Network'
 az provider register --namespace 'Microsoft.App'
 az provider register --namespace 'Microsoft.ContainerService'
+# Only if using Fabric Data Agent / Fabric private endpoint:
+az provider register --namespace 'Microsoft.Fabric'
 # Only if using Bing Search tool:
 az provider register --namespace 'Microsoft.Bing'
 ```
@@ -800,6 +820,10 @@ Creating a knowledge source (blob → AI Search → Foundry) in the portal is th
 |---------|-----|
 | Agent won't start | Use Standard setup (not Basic). Check subnet IPs available |
 | Agent can't access MCP tools | Check private endpoints + managed identity RBAC |
+| Private MCP tool returns 400 / 404 | Verify the MCP server implements Streamable HTTP and the URL includes the correct `/mcp` or `/noauth/mcp` path |
+| Private MCP/OpenAPI/A2A tool times out intermittently | Retry the test; the Template 19 testing guide notes transient Data Proxy / scale-unit routing failures |
+| Private Container Apps tool name doesn't resolve | Create/link the private DNS zone for the internal Container Apps environment and add the wildcard A record to the environment static IP |
+| Azure Function tool returns `403 Ip Forbidden` | Keep Function App `publicNetworkAccess` enabled and use VNet Integration for outbound private resource access; full private endpoint lockdown is not DataProxy-compatible |
 | Evaluation fails with network errors | Check all DNS zones configured |
 | Agent timeout on external calls | Firewall may block HTTPS. Allow destination or add NAT gateway |
 
@@ -843,8 +867,8 @@ Do you need network isolation?
                       │   ├── Need API Management integration?
                       │   │   └── 16-private-network-standard-agent-apim-setup-preview ⚠️ PREVIEW
                       │   │
-                      │   └── Need MCP servers or on-prem data in the VNet?
-                      │       └── 19-hybrid-private-resources-agent-setup
+                      │   └── Need private agent tools behind the VNet?
+                      │       └── 19-private-network-agent-tools
                       │
                       └── (See also 30/31/32 templates if you need Customer Managed Keys)
 ```
@@ -863,7 +887,7 @@ Do you need network isolation?
 | **16** | [private-network-standard-agent-apim-setup](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/16-private-network-standard-agent-apim-setup-preview) | Standard | SMI | **Full E2E** | + Azure API Management integration | **Preview** |
 | **17** | [private-network-standard-UAI-agent-setup](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/17-private-network-standard-user-assigned-identity-agent-setup) | Standard | **UAI** | **Full E2E** | User Assigned Identity instead of SMI | GA |
 | **18** | [managed-virtual-network](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/18-managed-virtual-network) | Standard | SMI | **Managed VNet** | Microsoft manages the VNet for you | **GA** |
-| **19** | [hybrid-private-resources-agent-setup](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/19-hybrid-private-resources-agent-setup) | Standard | SMI | **Full E2E** | + MCP servers + on-prem data + 3 subnets | GA |
+| **19** | [private-network-agent-tools](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/19-private-network-agent-tools) | Standard | SMI | **Full E2E** | + private MCP, OpenAPI, A2A, Azure Functions pattern, Fabric Data Agent + 3 subnets | GA |
 | **30** | [customer-managed-keys](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/30-customer-managed-keys) | — | SMI | — | CMK encryption | GA |
 | **31** | [CMK-standard-agent](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/31-customer-managed-keys-standard-agent) | Standard | SMI | — | CMK + Standard agent | GA |
 | **32** | [CMK-UAI](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/32-customer-managed-keys-user-assigned-identity) | — | UAI | — | CMK + User Assigned Identity | GA |
@@ -879,7 +903,7 @@ These four templates are all "full E2E network isolation" but with different ext
 | **15** | Standard + BYO VNet + all PEs | **The baseline.** Start here if you just need full network isolation. |
 | **16** | Same as 15 | + **Azure API Management** private endpoint. Use when agents need to call APIs through APIM. Preview. |
 | **17** | Same as 15 | + **User Assigned Identity** instead of System Managed Identity. Use when you need to pre-create and share the identity across resources, or when your org requires UAI. |
-| **19** | Same as 15 | + **Third subnet for MCP servers** + on-prem data access. Use when agents need to reach private MCP tools or hybrid data sources. Also supports toggling public/private access. |
+| **19** | Same as 15 | + **Third tools / MCP subnet** + Data Proxy / Tool Server routing for private MCP, OpenAPI, A2A, Azure Functions pattern, and Fabric Data Agent. Use when agents need tools behind the VNet. |
 
 ### My Recommendation
 
@@ -888,8 +912,8 @@ For most enterprise deployments:
 1. **Starting out?** Use **40** (basic) or **41** (standard) — no networking complexity
 2. **Need private portal access only?** Use **10** — adds a private endpoint, nothing else
 3. **Full enterprise lockdown?** Use **15** — this is the "production standard" template
-4. **Need private MCP or on-prem data?** Use **19** — extends 15 with hybrid connectivity
-5. **Don't want to manage a VNet?** Use **18** — but it's Preview, with limitations
+4. **Need private MCP, OpenAPI, A2A, or Function tools behind VNet?** Use **19** — extends 15 with private agent tools support
+5. **Don't want to manage a VNet?** Use **18** — GA, but with less network visibility and no BYO firewall
 
 ---
 
@@ -1025,6 +1049,8 @@ cp spoke.env.example spoke.env  # Edit: set SUBSCRIPTION_ID, SPOKE_RG, etc.
 ### Step 3: Deploy Foundry (Modified Template 15)
 
 This repo includes a **modified copy** of the [official Microsoft Template 15](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/15-private-network-standard-agent-setup) in the `bicep/` directory.
+
+> **Template 19 note:** The local `bicep/` folder is still a modified Template 15 for hub-spoke + Azure Firewall egress control. It does not yet include the Template 19 tools / MCP subnet, Data Proxy private-tool testing assets, Fabric private endpoint parameter, or private MCP/OpenAPI/A2A helper deployments. Use upstream [19-private-network-agent-tools](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/19-private-network-agent-tools) when private agent tools behind the VNet are required.
 
 #### Why We Modified Template 15
 
