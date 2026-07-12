@@ -59,6 +59,19 @@
   - [14.12 How Secrets Are Handled](#1412-how-secrets-are-handled)
   - [14.13 Post-Deployment Steps](#1413-post-deployment-steps)
   - [14.14 Troubleshooting](#1414-troubleshooting)
+- [Part 15: Managed Foundry Evaluation in a Private Environment](#part-15-managed-foundry-evaluation-in-a-private-environment)
+  - [15.1 Why Private Evaluation Has Extra Requirements](#151-why-private-evaluation-has-extra-requirements)
+  - [15.2 End-to-End Evaluation Traffic Flow](#152-end-to-end-evaluation-traffic-flow)
+  - [15.3 Prerequisite Checklist](#153-prerequisite-checklist)
+  - [15.4 Project Managed Identity and RBAC](#154-project-managed-identity-and-rbac)
+  - [15.5 App Insights and Log Analytics Trace Access](#155-app-insights-and-log-analytics-trace-access)
+  - [15.6 VNet Injection, Private Endpoints, and DNS](#156-vnet-injection-private-endpoints-and-dns)
+  - [15.7 Azure Firewall Rules for Managed Evaluation](#157-azure-firewall-rules-for-managed-evaluation)
+  - [15.8 Models, Traces, Dataset, and Evaluator Inputs](#158-models-traces-dataset-and-evaluator-inputs)
+  - [15.9 Run the Evaluation and Read the Real Error](#159-run-the-evaluation-and-read-the-real-error)
+  - [15.10 Failure Milestones and Fix Order](#1510-failure-milestones-and-fix-order)
+  - [15.11 Validation Checklist](#1511-validation-checklist)
+  - [15.12 Screenshot Capture Plan](#1512-screenshot-capture-plan)
 
 ---
 
@@ -718,6 +731,23 @@ Not all agent tools work behind a VNet. The key update from Template 19 is that 
 | Blob container `<workspaceId>-agents-blobstore` | Storage Blob Data Owner |
 | Cosmos DB database `enterprise_memory` | Cosmos DB Built-in Data Contributor |
 
+### Additional project managed identity roles for managed evaluation
+
+Managed evaluation runs as the **Foundry project system-assigned managed identity**,
+not as the developer who clicks **Run** in the portal. A private trace evaluation also
+needs these roles:
+
+| Scope | Role | Why |
+|-------|------|-----|
+| Foundry account | `Foundry User` | Allows the project identity to use Foundry evaluation capabilities |
+| Connected Application Insights | `Log Analytics Reader` | Reads captured agent traces |
+| Application Insights linked Log Analytics workspace | `Log Analytics Reader` | Reads the underlying workspace tables |
+| Both monitoring resources, only when tables are Protected | `Privileged Monitoring Data Reader` | Reads Protected trace tables |
+
+The App Insights component and linked workspace can be in different resource groups.
+Assign the monitoring roles on **both resource IDs**. See [Part 15](#part-15-managed-foundry-evaluation-in-a-private-environment)
+for the complete setup and validation commands.
+
 ### Custom RBAC for Cosmos DB Data Plan (Private Networks)
 
 When your Cosmos DB operates within a private network setup, built-in roles might lack exact data-plane query access. You may need to create and assign a strictly-scoped **Custom Role** to your project's managed identity so it can read/query items over the private network. 
@@ -844,7 +874,9 @@ Creating a knowledge source (blob → AI Search → Foundry) in the portal is th
 | Private MCP/OpenAPI/A2A tool times out intermittently | Retry the test; the Template 19 testing guide notes transient Data Proxy / scale-unit routing failures |
 | Private Container Apps tool name doesn't resolve | Create/link the private DNS zone for the internal Container Apps environment and add the wildcard A record to the environment static IP |
 | Azure Function tool returns `403 Ip Forbidden` | Keep Function App `publicNetworkAccess` enabled and use VNet Integration for outbound private resource access; full private endpoint lockdown is not DataProxy-compatible |
-| Evaluation fails with network errors | Check all DNS zones configured |
+| Evaluation fails querying Application Insights | Assign the project MI `Log Analytics Reader` on App Insights and its linked workspace; add `Privileged Monitoring Data Reader` only for Protected tables. See Part 15 |
+| Evaluation fails with `SSL: UNEXPECTED_EOF` while initializing a built-in evaluator | Allow the AzureML regional evaluator data-proxy through the forced-tunnel firewall. See Part 15 |
+| Evaluation fails with network errors | Check private DNS, agent-subnet routing, and all Part 15 evaluation FQDNs |
 | Agent timeout on external calls | Firewall may block HTTPS. Allow destination or add NAT gateway |
 
 ---
@@ -1215,9 +1247,16 @@ Without these, Foundry evaluation jobs will fail:
 
 | Protocol | FQDNs | Purpose |
 |----------|-------|---------|
-| HTTPS/443 | `*.azureml.ms` | Azure ML evaluation backend |
+| HTTPS/443 | `*.azureml.ms`, `*.api.azureml.ms`, `*.experiments.azureml.net` | Azure ML evaluation backend and evaluator registry discovery |
+| HTTPS/443 | `*.dataproxy.<region>.api.azureml.ms` | Regional data-proxy used to download built-in evaluator assets |
 | HTTPS/443 | `*.blob.core.windows.net` | Evaluation data storage |
 | HTTPS/443 | `raw.githubusercontent.com` | Evaluation prompt templates |
+
+> **Important:** Built-in evaluator assets are not always downloaded directly from the
+> visible Blob URL. The evaluation runtime can rewrite the URL to a host such as
+> `<registry>-blob.dataproxy.swedencentral.api.azureml.ms`. Allowing only
+> `*.blob.core.windows.net` does not cover that request. See Part 15 for the complete
+> private evaluation runbook and firewall example.
 
 #### Optional: Application Insights
 
@@ -2316,6 +2355,602 @@ The Function App's managed identity has `Key Vault Secrets User` role — it can
 | `sharepoint-agentic` returns no references | KB planner can't reach AI Services / Search, OR project MI lacks `Search Index Data Reader` | Wait 5–10 min for RBAC propagation after first deploy. Smoke test the KB directly: `curl -X POST ".../knowledgebases/sharepoint-kb/retrieve?api-version=2025-11-01-preview"` from a jumpbox |
 | Step 14b fails creating the project connection (`sharepoint-kb-mcp`) | Connection already exists with conflicting `audience` / `authType` | Delete the connection in Foundry portal → Project Settings → Connections, then re-run the deploy. The script recreates it idempotently |
 | `USE_AGENTIC_RETRIEVAL=false` after a previous `true` deploy — KS / KB / agent linger | By design — flipping the flag back stops new versions from being pushed but does NOT delete what was created | Delete manually: `az rest -m DELETE` against the KB / KS, then delete `sharepoint-agentic` and `sharepoint-kb-mcp` in the Foundry portal |
+
+---
+
+## Part 15: Managed Foundry Evaluation in a Private Environment
+
+This chapter explains how to make **portal-managed Foundry evaluations** work when the
+Foundry account, agent compute, and BYO dependencies are private and agent-subnet
+egress is forced through Azure Firewall.
+
+It covers the complete path validated in a deny-by-default hub-spoke environment:
+
+- Foundry account public access disabled
+- Standard Agent Setup with BYO Storage, Cosmos DB, and AI Search
+- Agent and evaluation compute injected into a delegated spoke subnet
+- Private endpoints and private DNS for all customer-owned PaaS resources
+- `0.0.0.0/0` forced through Azure Firewall
+- Application Insights connected to the Foundry project
+- Built-in evaluators downloaded through the AzureML regional data-proxy
+
+The final validated evaluation completed in `VNET` mode while the customer Storage
+account remained `publicNetworkAccess=Disabled` and `defaultAction=Deny`.
+
+### 15.1 Why Private Evaluation Has Extra Requirements
+
+A managed evaluation is not a single API call. It crosses several independent security
+boundaries:
+
+1. The Foundry evaluation service authenticates as the **project managed identity**.
+2. Trace-based evaluation queries Application Insights and the linked Log Analytics
+   workspace.
+3. The evaluation runtime runs in the network-injected agent environment.
+4. The runtime reads the dataset and writes results to the project's Storage account.
+5. Built-in evaluator code is resolved from the AzureML evaluator registry.
+6. Evaluator assets are downloaded through a regional AzureML **data-proxy** endpoint.
+7. Judge-based evaluators call the selected model deployment.
+
+Each step can fail independently. For example:
+
+- Correct firewall rules do not grant permission to read traces.
+- Correct RBAC does not allow an evaluator asset through a deny-all firewall.
+- A working private endpoint to the customer Storage account does not cover evaluator
+  assets hosted behind the AzureML data-proxy.
+- The portal often displays only `Failed`; the actionable exception is in the managed
+  run's `user_logs.txt` artifact.
+
+### 15.2 End-to-End Evaluation Traffic Flow
+
+![Managed Foundry evaluation traffic flow in a private hub-spoke environment](docs/images/agent-eval-network-diagram.png)
+
+```text
+Foundry portal / evaluation API
+              |
+              | creates managed run as Project Managed Identity
+              v
+Evaluation compute in agent-subnet (Microsoft.App/environments)
+       |              |                 |                 |
+       |              |                 |                 +--> Judge model
+       |              |                 +--> AzureML evaluator registry
+       |              |                      and regional data-proxy
+       |              +--> App Insights / Log Analytics traces
+       +--> Private endpoints for BYO Storage / Cosmos / Search
+              |
+              +--> results.jsonl, instance_results.jsonl, user_logs.txt
+
+All non-private-endpoint egress --> UDR 0.0.0.0/0 --> Azure Firewall --> allow-list
+```
+
+### 15.3 Prerequisite Checklist
+
+Complete this checklist before treating a failed run as a product issue:
+
+- [ ] Foundry account and project exist; the project has a system-assigned identity.
+- [ ] Standard Agent Setup capability host is healthy.
+- [ ] Agent subnet is `/27` or larger and delegated to `Microsoft.App/environments`.
+- [ ] Foundry `networkInjections` scenario `agent` references that subnet.
+- [ ] Private endpoints exist for Foundry, Storage Blob, Cosmos DB, and AI Search.
+- [ ] Private DNS zones are linked to the spoke VNet or forwarded by custom DNS.
+- [ ] App Insights is connected to the Foundry project and receives agent traces.
+- [ ] App Insights and its linked workspace permit the required query path.
+- [ ] Project MI has `Foundry User` and the required monitoring roles.
+- [ ] Judge/model deployments required by the selected evaluators are `Succeeded`.
+- [ ] Forced-tunnel firewall rules include AzureML evaluator registry/data-proxy FQDNs.
+- [ ] The dataset mappings provide every field required by the selected evaluators.
+- [ ] New RBAC and firewall changes have reached `Succeeded` before the test run starts.
+
+### 15.4 Project Managed Identity and RBAC
+
+#### Resolve the project identity
+
+```bash
+export SUB="<subscription-id>"
+export RG="<foundry-resource-group>"
+export ACCOUNT="<foundry-account-name>"
+export PROJECT="<foundry-project-name>"
+
+export ACCOUNT_SCOPE="/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.CognitiveServices/accounts/$ACCOUNT"
+export PROJECT_SCOPE="$ACCOUNT_SCOPE/projects/$PROJECT"
+
+export PROJECT_MI=$(az rest --method get \
+  --url "https://management.azure.com$PROJECT_SCOPE?api-version=2025-04-01-preview" \
+  --query identity.principalId -o tsv)
+
+echo "Project managed identity: $PROJECT_MI"
+```
+
+Use the **project** identity for the documented evaluation assignments. Do not replace
+it with the parent Foundry account identity just because both identities exist.
+
+#### Assign Foundry User
+
+Assign `Foundry User` at the Foundry **account** scope. The stable role ID is used below
+because some portals still display the previous `Azure AI User` name.
+
+```bash
+az role assignment create \
+  --assignee-object-id "$PROJECT_MI" \
+  --assignee-principal-type ServicePrincipal \
+  --role "53ca6127-db72-4b80-b1b0-d745d6d5456d" \
+  --scope "$ACCOUNT_SCOPE"
+```
+
+#### Resolve the connected App Insights resource
+
+```bash
+az rest --method get \
+  --url "https://management.azure.com$PROJECT_SCOPE/connections?api-version=2025-04-01-preview" \
+  --query "value[?properties.category=='AppInsights'].{name:name,target:properties.target}" \
+  -o table
+
+export APPINSIGHTS_ID="<App Insights ARM resource ID returned above>"
+export LOG_ANALYTICS_ID=$(az resource show --ids "$APPINSIGHTS_ID" \
+  --query properties.WorkspaceResourceId -o tsv)
+```
+
+#### Assign trace-reader roles
+
+```bash
+for SCOPE in "$APPINSIGHTS_ID" "$LOG_ANALYTICS_ID"; do
+  az role assignment create \
+    --assignee-object-id "$PROJECT_MI" \
+    --assignee-principal-type ServicePrincipal \
+    --role "Log Analytics Reader" \
+    --scope "$SCOPE"
+done
+```
+
+If the trace tables are configured with protection level `Protected`, also assign:
+
+```bash
+for SCOPE in "$APPINSIGHTS_ID" "$LOG_ANALYTICS_ID"; do
+  az role assignment create \
+    --assignee-object-id "$PROJECT_MI" \
+    --assignee-principal-type ServicePrincipal \
+    --role "Privileged Monitoring Data Reader" \
+    --scope "$SCOPE"
+done
+```
+
+`Privileged Monitoring Data Reader` is conditional. Do not grant it automatically in
+environments where the trace tables are not Protected.
+
+#### Verify effective assignments
+
+```bash
+az role assignment list --assignee "$PROJECT_MI" --scope "$ACCOUNT_SCOPE" \
+  --include-inherited --query "[].roleDefinitionName" -o tsv
+
+az role assignment list --assignee "$PROJECT_MI" --scope "$APPINSIGHTS_ID" \
+  --include-inherited --query "[].roleDefinitionName" -o tsv
+
+az role assignment list --assignee "$PROJECT_MI" --scope "$LOG_ANALYTICS_ID" \
+  --include-inherited --query "[].roleDefinitionName" -o tsv
+```
+
+Allow up to 10 minutes for role assignments to propagate. Compare the role assignment
+`createdOn` timestamp with the evaluation run's `createdAt` timestamp before deciding
+that a role did not fix the failure.
+
+### 15.5 App Insights and Log Analytics Trace Access
+
+The project connection points to the App Insights component, but the traces live in its
+linked Log Analytics workspace. Validate both resources.
+
+```bash
+az resource show --ids "$APPINSIGHTS_ID" \
+  --query "{workspace:properties.WorkspaceResourceId,query:properties.publicNetworkAccessForQuery,ingestion:properties.publicNetworkAccessForIngestion}" \
+  -o json
+
+az monitor log-analytics workspace show --ids "$LOG_ANALYTICS_ID" \
+  --query "{query:publicNetworkAccessForQuery,ingestion:publicNetworkAccessForIngestion,customerId:customerId}" \
+  -o json
+```
+
+In the validated environment, query access was `Enabled` on both resources. If customer
+policy requires query access to be disabled, design and validate the supported private
+query path before expecting a managed trace evaluation to work.
+
+Confirm traces exist before starting an evaluation:
+
+```bash
+WORKSPACE_ID=$(az monitor log-analytics workspace show --ids "$LOG_ANALYTICS_ID" \
+  --query customerId -o tsv)
+
+az monitor log-analytics query --workspace "$WORKSPACE_ID" \
+  --analytics-query "search * | where TimeGenerated > ago(24h) | summarize count() by \$table" \
+  -o table
+```
+
+Expected GenAI telemetry commonly includes `AppRequests`, `AppDependencies`, and
+`AppGenAIContent`.
+
+### 15.6 VNet Injection, Private Endpoints, and DNS
+
+#### Validate the delegated agent subnet
+
+```bash
+az network vnet subnet show \
+  --resource-group "<spoke-rg>" \
+  --vnet-name "<spoke-vnet>" \
+  --name "<agent-subnet>" \
+  --query "{prefix:addressPrefix,delegations:delegations[].serviceName,routeTable:routeTable.id}" \
+  -o json
+```
+
+Expected delegation:
+
+```text
+Microsoft.App/environments
+```
+
+Confirm the Foundry account uses the same subnet:
+
+```bash
+az rest --method get \
+  --url "https://management.azure.com$ACCOUNT_SCOPE?api-version=2025-04-01-preview" \
+  --query properties.networkInjections -o json
+```
+
+Expected values include:
+
+```json
+{
+  "scenario": "agent",
+  "subnetArmId": "<agent-subnet-resource-id>",
+  "useMicrosoftManagedNetwork": false
+}
+```
+
+#### Required private endpoint DNS zones
+
+| Resource | Private DNS zone |
+|----------|------------------|
+| Foundry project/API | `privatelink.services.ai.azure.com` |
+| Foundry / Cognitive Services | `privatelink.cognitiveservices.azure.com` |
+| Azure OpenAI compatibility endpoint | `privatelink.openai.azure.com` |
+| Storage Blob | `privatelink.blob.core.windows.net` |
+| Cosmos DB for NoSQL | `privatelink.documents.azure.com` |
+| AI Search | `privatelink.search.windows.net` |
+
+If the spoke uses Azure Firewall or another custom resolver as DNS, enable DNS proxy and
+configure forwarding to Azure DNS (`168.63.129.16`) or an equivalent Azure-aware
+resolver.
+
+Validate from a VM or VPN client that uses the same DNS path:
+
+```bash
+nslookup "${ACCOUNT}.services.ai.azure.com" <customer-dns-server>
+nslookup "<storage-account>.blob.core.windows.net" <customer-dns-server>
+nslookup "<cosmos-account>.documents.azure.com" <customer-dns-server>
+nslookup "<search-service>.search.windows.net" <customer-dns-server>
+```
+
+The Foundry and BYO-resource names should resolve through `privatelink` CNAMEs to
+private endpoint IPs. A TLS response such as HTTP `400`, `401`, or `404` proves DNS,
+routing, and TLS are functioning; a reset or timeout does not.
+
+The validated environment kept Storage at:
+
+```text
+publicNetworkAccess = Disabled
+defaultAction       = Deny
+```
+
+Do not enable public Storage access as a permanent evaluation workaround when private
+VNet injection is intended.
+
+### 15.7 Azure Firewall Rules for Managed Evaluation
+
+When the agent subnet has a UDR such as `0.0.0.0/0 -> Azure Firewall`, Azure Firewall
+application rules must cover both the customer dependencies and Microsoft-hosted
+evaluation dependencies.
+
+#### Required FQDN groups
+
+| Group | HTTPS FQDNs | Purpose |
+|-------|-------------|---------|
+| Agent runtime | `mcr.microsoft.com`, `*.data.mcr.microsoft.com`, `*.identity.azure.net` | Runtime image and managed identity |
+| Authentication | `login.microsoftonline.com`, `*.login.microsoftonline.com`, `*.login.microsoft.com` | Entra authentication |
+| Evaluation discovery | `*.azureml.ms`, `*.api.azureml.ms`, `*.experiments.azureml.net` | Evaluator registry and AzureML evaluation backend |
+| Regional evaluator assets | `*.dataproxy.<region>.api.azureml.ms` | Downloads built-in evaluator packages through the regional data-proxy |
+| Evaluation / BYO storage | `*.blob.core.windows.net`, optionally `*.queue.core.windows.net`, `*.table.core.windows.net`, `*.dfs.core.windows.net` | Dataset, artifact, and customer storage |
+| BYO Cosmos DB | `*.documents.azure.com` | Agent state and data resources |
+| BYO AI Search | `*.search.windows.net` | Retrieval dependencies |
+| App Insights | `*.applicationinsights.azure.com`, `*.in.applicationinsights.azure.com`, `*.livediagnostics.monitor.azure.com`, `dc.services.visualstudio.com`, `*.services.visualstudio.com` | Monitoring ingestion and diagnostics |
+| Prompt/sample assets when used | `raw.githubusercontent.com`, `github.com`, `objects.githubusercontent.com` | Prompt templates or sample datasets |
+
+The critical, non-obvious dependency is the regional data-proxy. A run log can show:
+
+```text
+Single-tenant mode: routing blob download through data-proxy via discovery_uri
+https://swedencentral.api.azureml.ms
+
+Converted blob URL to data-proxy URL:
+<registry>.blob.core.windows.net
+  -> <registry>-blob.dataproxy.swedencentral.api.azureml.ms
+```
+
+Allowing `*.blob.core.windows.net` does **not** allow the rewritten data-proxy hostname.
+
+Azure Firewall supports leading-wildcard FQDNs. Do not depend on a wildcard in the
+middle of a name such as `*.dataproxy.*.api.azureml.ms`; add the regional pattern
+explicitly.
+
+#### Example AzureML data-proxy application rule
+
+```bash
+export FIREWALL_RG="<hub-firewall-rg>"
+export FIREWALL_POLICY="<firewall-policy-name>"
+export RULE_GROUP="<rule-collection-group-name>"
+export AGENT_SOURCE_PREFIX="<agent-subnet-or-spoke-prefix>"
+export FOUNDRY_REGION="<region>" # example: swedencentral
+
+az network firewall policy rule-collection-group collection add-filter-collection \
+  --policy-name "$FIREWALL_POLICY" \
+  --resource-group "$FIREWALL_RG" \
+  --rule-collection-group-name "$RULE_GROUP" \
+  --name AllowFoundryDataProxy \
+  --collection-priority 550 \
+  --action Allow \
+  --rule-name allow-azureml-dataproxy \
+  --rule-type ApplicationRule \
+  --description "Allow Foundry managed evaluation registry and data-proxy" \
+  --source-addresses "$AGENT_SOURCE_PREFIX" \
+  --protocols Https=443 \
+  --target-fqdns \
+    "*.api.azureml.ms" \
+    "*.dataproxy.${FOUNDRY_REGION}.api.azureml.ms" \
+    "*.azureml.ms" \
+    "*.experiments.azureml.net"
+```
+
+Verify the rule is active before creating the test run:
+
+```bash
+az network firewall policy rule-collection-group show \
+  --policy-name "$FIREWALL_POLICY" \
+  --resource-group "$FIREWALL_RG" \
+  --name "$RULE_GROUP" \
+  --query "{state:provisioningState,collections:ruleCollections[].name}" \
+  -o json
+```
+
+Do not use an evaluation run created before the firewall operation reached
+`provisioningState=Succeeded` as evidence that the rule failed.
+
+When firewall diagnostics are enabled, query denied requests directly:
+
+```kql
+AZFWApplicationRule
+| where Action == "Deny"
+| where SourceIp startswith "<agent-subnet-prefix>"
+| project TimeGenerated, SourceIp, Fqdn, TargetUrl, Protocol, Action
+| order by TimeGenerated desc
+```
+
+### 15.8 Models, Traces, Dataset, and Evaluator Inputs
+
+Network and RBAC fixes only get the evaluation runtime started. The selected evaluators
+still need valid models and input mappings.
+
+#### Model deployments
+
+Confirm the agent model and judge model are deployed and healthy:
+
+```bash
+az cognitiveservices account deployment list \
+  --name "$ACCOUNT" --resource-group "$RG" \
+  --query "[].{name:name,model:properties.model.name,state:properties.provisioningState,sku:sku.name,capacity:sku.capacity}" \
+  -o table
+```
+
+#### Trace fields
+
+Quality evaluators typically need:
+
+- `gen_ai.input.messages`
+- `gen_ai.output.messages`
+- Agent and operation identifiers used by the trace filter
+
+Tool evaluators additionally need:
+
+- Tool definitions / schemas
+- Tool calls
+- Tool outputs
+
+If the trace or dataset lacks tool definitions, the run can still complete while rows
+log:
+
+```text
+Tool definitions input is required but not provided.
+```
+
+Treat this as an evaluator mapping/instrumentation issue, not a network failure.
+
+#### Dataset mappings
+
+Verify every evaluator's required field is mapped. For an agent-target evaluation,
+`response` may come from `{{sample.output_items}}`; trace-based evaluators may extract
+conversation and tool fields directly from GenAI semantic-convention spans.
+
+The runnable example in this repository is under [`eval/`](eval/):
+
+- [`eval/iec-eval-dataset.jsonl`](eval/iec-eval-dataset.jsonl)
+- [`eval/run_eval_sdk.py`](eval/run_eval_sdk.py)
+- [`eval/check_results.py`](eval/check_results.py)
+- [`eval/README-eval-plan.md`](eval/README-eval-plan.md)
+
+### 15.9 Run the Evaluation and Read the Real Error
+
+#### Portal run
+
+1. Open the Foundry project from a VPN/jumpbox path that resolves the private endpoint.
+2. Open **Evaluations**.
+3. Create an Agent or Dataset evaluation.
+4. Select the target, dataset, evaluators, judge deployment, and field mappings.
+5. Submit the run.
+
+A healthy private evaluation can take many minutes. Previous network failures often
+failed during evaluator initialization in roughly one minute. A longer-running job is a
+useful milestone but not proof of completion.
+
+#### List evaluation runs through the private project endpoint
+
+```bash
+export PROJECT_ENDPOINT="https://<account>.services.ai.azure.com/api/projects/<project>"
+
+az rest --method get \
+  --resource "https://ai.azure.com" \
+  --url "$PROJECT_ENDPOINT/evaluations/runs?api-version=2025-05-15-preview" \
+  --query "value[].{id:id,status:status,name:displayName,created:systemData.createdAt}" \
+  -o table
+```
+
+This command must run from a network that resolves and reaches the private Foundry
+endpoint.
+
+#### Find and download `user_logs.txt`
+
+The project Storage account creates generated result containers named
+`aiservices-<guid>`. Sort by modification time after the run finishes:
+
+```bash
+export STORAGE_ACCOUNT="<project-storage-account>"
+
+az storage container list \
+  --account-name "$STORAGE_ACCOUNT" \
+  --auth-mode login \
+  --query "reverse(sort_by([].{name:name,modified:properties.lastModified}, &modified))[:10]" \
+  -o table
+```
+
+Inspect the newest containers:
+
+```bash
+az storage blob list \
+  --account-name "$STORAGE_ACCOUNT" \
+  --container-name "<result-container>" \
+  --auth-mode login -o table
+```
+
+Download the managed runtime log:
+
+```bash
+az storage blob download \
+  --account-name "$STORAGE_ACCOUNT" \
+  --container-name "<result-container>" \
+  --name user_logs.txt \
+  --file /tmp/foundry-eval-user-logs.txt \
+  --auth-mode login --no-progress
+```
+
+Search for the failure class and the exact hostname:
+
+```bash
+grep -iE "ERROR|Traceback|denied|forbidden|insufficient|UNEXPECTED_EOF|https://|dataproxy|blob.core" \
+  /tmp/foundry-eval-user-logs.txt
+```
+
+Successful runs also write `results.jsonl` and `instance_results.jsonl` and expose a
+non-empty `evaluationResultId` through the evaluation API.
+
+### 15.10 Failure Milestones and Fix Order
+
+Fix failures in the order the runtime reaches them. Do not change every security control
+at once.
+
+| Failure / evidence | What has been proven | Next action |
+|--------------------|----------------------|-------------|
+| `InsufficientAccessError` querying Application Insights | Evaluation runtime started, but trace authorization failed | Assign project-MI monitoring roles on App Insights **and** linked workspace |
+| App Insights error disappears; run fails initializing `BuiltinCodeEvaluator` | Trace access is fixed; runtime reached evaluator initialization | Inspect the asset URL and firewall path |
+| `SSL: UNEXPECTED_EOF` in `download_evaluator_asset_files` | Evaluator asset TLS path was reset/blocked | Allow the exact logged AzureML data-proxy/discovery FQDNs |
+| Run starts before firewall rule group reaches `Succeeded` | The run did not test the final policy | Wait for policy success, then create a new run |
+| Run completes with per-row tool-definition errors | Infrastructure works; evaluator input is incomplete | Add tool definitions/calls to trace instrumentation or dataset mapping |
+| Run is `Completed`, has metrics, `results.jsonl`, and `instance_results.jsonl` | Managed private evaluation works end-to-end | Tune quality thresholds and evaluator inputs |
+
+### 15.11 Validation Checklist
+
+Use this as the customer handoff checklist:
+
+#### Identity and monitoring
+
+- [ ] Project system-assigned MI identified.
+- [ ] `Foundry User` assigned at Foundry account scope.
+- [ ] `Log Analytics Reader` assigned on connected App Insights.
+- [ ] `Log Analytics Reader` assigned on the linked workspace.
+- [ ] `Privileged Monitoring Data Reader` assigned on both only if trace tables are Protected.
+- [ ] App Insights connection points to the expected resource.
+- [ ] Recent GenAI traces exist.
+
+#### Private network
+
+- [ ] Agent subnet is delegated to `Microsoft.App/environments` and has sufficient IPs.
+- [ ] Foundry network injection references the correct subnet.
+- [ ] Foundry, Blob, Cosmos DB, and Search private endpoints are Approved.
+- [ ] Private DNS zones are linked/forwarded correctly.
+- [ ] Custom DNS or Azure Firewall DNS proxy resolves private resources to PE IPs.
+- [ ] Storage and other BYO resources can remain public-access disabled.
+
+#### Firewall
+
+- [ ] Runtime/authentication FQDNs allowed.
+- [ ] AzureML discovery FQDNs allowed.
+- [ ] Regional `*.dataproxy.<region>.api.azureml.ms` allowed.
+- [ ] BYO resource FQDNs allowed where public/service egress is used.
+- [ ] App Insights FQDNs allowed when telemetry ingestion traverses the firewall.
+- [ ] Rule collection state is `Succeeded` before the validation run starts.
+
+#### Evaluation
+
+- [ ] Agent and judge deployments are healthy.
+- [ ] Dataset/trace fields match evaluator requirements.
+- [ ] New run starts after all RBAC/firewall changes are active.
+- [ ] Run completes and exposes metrics plus an `evaluationResultId`.
+- [ ] `user_logs.txt` has no run-level authorization, connection, or SSL failures.
+
+### 15.12 Screenshot Capture Plan
+
+The text and insertion points are ready. Capture the screenshots later and save them in
+the new directory:
+
+```text
+docs/images/evaluation-private/
+```
+
+Use these exact filenames so they can be inserted without renaming:
+
+| # | Save as | Capture | Insert after |
+|---|---------|---------|--------------|
+| 1 | `01-project-managed-identity.png` | Foundry project Identity blade showing system-assigned identity enabled and Object ID | §15.4 “Resolve the project identity” |
+| 2 | `02-foundry-user-role.png` | Foundry account IAM filtered to the project MI and `Foundry User` | §15.4 “Assign Foundry User” |
+| 3 | `03-app-insights-monitoring-roles.png` | App Insights IAM showing `Log Analytics Reader` and, if applicable, `Privileged Monitoring Data Reader` | §15.4 “Assign trace-reader roles” |
+| 4 | `04-log-analytics-monitoring-roles.png` | Linked workspace IAM with the same project-MI monitoring roles | §15.4 “Verify effective assignments” |
+| 5 | `05-agent-subnet-delegation.png` | VNet subnet blade showing `Microsoft.App/environments`, prefix, and route table | §15.6 “Validate the delegated agent subnet” |
+| 6 | `06-private-endpoints.png` | Approved Foundry, Storage Blob, Cosmos DB, and Search private endpoint connections | §15.6 “Required private endpoint DNS zones” |
+| 7 | `07-private-dns-resolution.png` | Terminal `nslookup` showing Foundry/Storage CNAME to `privatelink` and private IP | §15.6 validation commands |
+| 8 | `08-firewall-evaluation-rules.png` | Azure Firewall policy showing AzureML discovery, regional data-proxy, BYO resource, and App Insights rules | §15.7 “Required FQDN groups” |
+| 9 | `09-evaluation-running.png` | Foundry evaluation status `Running` after passing the former early-failure point | §15.9 “Portal run” |
+| 10 | `10-evaluation-completed.png` | Completed run with overall and evaluator scores | §15.9 after successful-run artifacts |
+| 11 | `11-user-logs-data-proxy.png` | Redacted `user_logs.txt` lines showing AzureML data-proxy URL conversion | §15.7 after the data-proxy log example |
+| 12 | `12-user-logs-completed.png` | Redacted completion/upload lines with no SSL or authorization failure | §15.10 completed milestone |
+
+Screenshot rules:
+
+- Redact subscription IDs, tenant IDs, object IDs, storage SAS tokens, account keys, and
+  customer-specific names unless the environment is explicitly a disposable demo.
+- Keep role names, FQDN patterns, subnet delegation, status, timestamps, and error text
+  visible; those are the instructional evidence.
+- Crop browser chrome when it does not provide context.
+- Prefer PNG for portal/terminal screenshots and use a readable width of at least 1600 px.
+- Do not overwrite the existing general networking screenshots in `docs/images/`.
+
+After the files are added, insert each with this pattern at the location listed above:
+
+```markdown
+![Project managed identity used by managed Foundry evaluation](docs/images/evaluation-private/01-project-managed-identity.png)
+```
 
 ---
 
