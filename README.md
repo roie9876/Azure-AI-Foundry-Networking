@@ -1,6 +1,6 @@
 # Microsoft Foundry Networking — The Complete Guide
 
-> **Updated September 2026** — Covers Microsoft Foundry networking, private evaluation, and AI Gateway patterns, including classic APIM with an on-premises self-hosted gateway.
+> **Updated September 2026** — Covers Microsoft Foundry networking, private evaluation, and AI Gateway patterns, including classic APIM with a hybrid and multicloud self-hosted gateway for on-premises, AWS, GCP, edge, and other environments.
 
 [![Deploy To Azure](https://raw.githubusercontent.com/Azure/azure-quickstart-templates/master/1-CONTRIBUTION-GUIDE/images/deploytoazure.svg?sanitize=true)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Froie9876%2FAzure-AI-Foundry-Networking%2Frefs%2Fheads%2Fmain%2Fbicep%2Fazuredeploy.json)
 
@@ -75,7 +75,7 @@
 - [Part 16: AI Gateway — Managed and Self-Hosted APIM](#part-16-ai-gateway--managed-and-self-hosted-apim)
   - [16.1 The Two Main AI Gateway Scenarios](#161-the-two-main-ai-gateway-scenarios)
   - [16.2 Scenario 1 — Foundry-Created Basic v2 APIM](#162-scenario-1--foundry-created-basic-v2-apim)
-  - [16.3 Scenario 2 — Classic APIM with an On-Premises Self-Hosted Gateway](#163-scenario-2--classic-apim-with-an-on-premises-self-hosted-gateway)
+  - [16.3 Scenario 2: Classic APIM with a Hybrid and Multicloud Self-Hosted Gateway](#163-scenario-2-classic-apim-with-a-hybrid-and-multicloud-self-hosted-gateway)
   - [16.4 Tested Deployment Walkthrough](#164-tested-deployment-walkthrough)
   - [16.5 Proving Local Token-Limit Enforcement](#165-proving-local-token-limit-enforcement)
   - [16.6 Monitoring and Logging](#166-monitoring-and-logging)
@@ -2985,13 +2985,13 @@ There are two main scenarios.
 | APIM tier | Basic v2 by default | Classic Developer for evaluation; Premium for production |
 | APIM management plane | Azure | Azure |
 | Gateway data plane | Azure-managed | Customer-hosted container |
-| Where the client TLS call terminates | Azure APIM | On-premises or other-cloud gateway |
+| Where the agent / LLM call terminates | Azure APIM | Wherever the customer hosts the gateway: on-premises, AWS, GCP, edge, or another cloud |
 | Where APIM policies execute | Azure | At the self-hosted gateway location |
 | Foundry integration | Standard documented flow | AI Gateway Early release channel; preview behavior |
-| Hybrid / multicloud placement | Clients can be anywhere, gateway remains in Azure | Gateway can run on-premises, another cloud, or supported container infrastructure |
+| Workload placement | Foundry agents, APIM gateway, and Foundry models all run in Azure | Applications, agents, and the self-hosted gateway can run on-premises, AWS, GCP, edge, or another supported container environment |
 | Native Azure Monitor metrics | Yes | Yes, reported by the self-hosted gateway |
 | `ApiManagementGatewayLogs` | Available when APIM diagnostics are enabled | Self-hosted runtime diagnostic logs are not uploaded to this table |
-| Best fit | Fast setup and Azure-hosted governance | Local traffic termination, hybrid policy enforcement, or data-path locality requirements |
+| Best fit | Foundry-native agents and LLM calls with fully Azure-hosted governance | Hybrid or multicloud traffic termination, policy enforcement near the workload, or data-path locality requirements |
 
 > **Preview note (validated September 2026):** The public Foundry requirements page
 > still describes existing APIM selection as v2-only. A classic Developer instance
@@ -3003,7 +3003,8 @@ There are two main scenarios.
 
 When you select **Manage → AI Gateway → Add AI Gateway → Create new**, Foundry
 creates a **Basic v2** APIM instance. Both the APIM management plane and gateway data
-plane run in Azure.
+plane run in Azure. In this scenario, the Foundry agents, AI Gateway, and Foundry model
+deployments are all Azure-hosted; there is no separate customer-hosted gateway runtime.
 
 ![Foundry-created Basic v2 managed AI Gateway topology](docs/images/ai-gateway-foundry-basic-v2-managed.png)
 
@@ -3011,7 +3012,7 @@ Editable source: [Basic v2 managed AI Gateway diagram](docs/ai-gateway-foundry-b
 
 #### Request flow
 
-1. An application or agent calls the APIM gateway endpoint.
+1. A Foundry agent sends its agent or LLM call through the APIM gateway endpoint.
 2. The Azure-managed APIM gateway terminates TLS and authenticates the caller.
 3. APIM evaluates the project token-limit, quota, and other configured policies.
 4. An allowed request is forwarded to the Foundry model endpoint by using the APIM
@@ -3019,10 +3020,14 @@ Editable source: [Basic v2 managed AI Gateway diagram](docs/ai-gateway-foundry-b
 5. A denied request stops in Azure APIM and returns a policy response such as `429`
    for a token-rate limit or `403` for a total token quota.
 
+The managed AI Gateway can therefore enforce both Foundry agent API traffic and the
+underlying LLM calls while every component remains in Azure.
+
 #### When to use it
 
 - You want the shortest supported path from Foundry to an AI Gateway.
-- Keeping the gateway data plane in Azure meets the workload's requirements.
+- Your agents and models run in Foundry and keeping the complete gateway path in Azure
+  meets the workload's requirements.
 - Basic v2 capacity is sufficient for development or testing.
 - You want APIM diagnostics and metrics through the normal Azure-managed gateway path.
 
@@ -3030,16 +3035,18 @@ For production throughput or private networking, reuse an existing **Standard v2
 **Premium v2** APIM instance instead of creating Basic v2. A private Foundry resource
 also requires a compatible private APIM networking configuration.
 
-### 16.3 Scenario 2 — Classic APIM with an On-Premises Self-Hosted Gateway
+### 16.3 Scenario 2: Classic APIM with a Hybrid and Multicloud Self-Hosted Gateway
 
 In this scenario, a classic APIM instance remains the Azure management plane, while a
-containerized APIM gateway runs in an on-premises network. The application or agent
-calls this on-premises endpoint. The gateway terminates TLS, executes the Foundry-created
-APIM policy locally, and opens a separate outbound TLS connection to the Foundry model.
+containerized APIM gateway runs in a customer-selected environment. That environment can
+be an on-premises data center, AWS, GCP, an edge location, or another cloud or container
+platform. The application or agent calls the gateway in that environment. The gateway
+terminates TLS, executes the Foundry-created APIM policy at its deployment location, and
+opens a separate outbound TLS connection to the Foundry model.
 
-![Classic APIM with an on-premises self-hosted AI Gateway topology](docs/images/ai-gateway-classic-apim-self-hosted-on-prem.png)
+![Classic APIM with a hybrid and multicloud self-hosted AI Gateway topology](docs/images/ai-gateway-classic-apim-self-hosted-on-prem.png)
 
-Editable source: [Classic APIM self-hosted gateway diagram](docs/ai-gateway-classic-apim-self-hosted-on-prem.drawio)
+Editable source: [Hybrid and multicloud self-hosted gateway diagram](docs/ai-gateway-classic-apim-self-hosted-on-prem.drawio)
 
 #### Control plane versus data plane
 
@@ -3047,7 +3054,7 @@ Editable source: [Classic APIM self-hosted gateway diagram](docs/ai-gateway-clas
 |---|---|---|
 | Foundry control experience | Azure | Associates the APIM instance, enables projects, and configures project token limits and quotas |
 | APIM management plane | Azure classic APIM | Stores APIs, backends, products, subscriptions, policies, and self-hosted gateway registrations |
-| APIM gateway data plane | On-premises container platform | Terminates client TLS, authenticates requests, evaluates policies, forwards allowed calls, and blocks denied calls |
+| APIM gateway data plane | Customer-hosted container platform: on-premises, AWS, GCP, edge, or another cloud | Terminates client TLS, authenticates requests, evaluates policies, forwards allowed calls, and blocks denied calls |
 | Foundry model plane | Azure | Hosts the selected model deployment and processes only requests allowed by the gateway |
 
 The self-hosted gateway needs outbound HTTPS connectivity to its APIM configuration
@@ -3055,10 +3062,11 @@ endpoint for configuration updates, heartbeat, and metrics. It also needs HTTPS 
 to the configured Foundry model endpoint. Clients do not need to call the Azure-managed
 APIM gateway in this topology.
 
-> The self-hosted gateway is **not an agent**. An on-premises agent may call through it
-> without being deployed or registered in Foundry. Register the agent as a custom agent
-> only when Foundry inventory, proxy governance, block/unblock controls, or correlated
-> OpenTelemetry agent traces are required.
+> The self-hosted gateway is **not an agent**. An agent running on-premises, in AWS,
+> GCP, at the edge, or in another cloud may call through it without being deployed or
+> registered in Foundry. Register the agent as a custom agent only when Foundry
+> inventory, proxy governance, block/unblock controls, or correlated OpenTelemetry agent
+> traces are required.
 
 ### 16.4 Tested Deployment Walkthrough
 
@@ -3097,7 +3105,10 @@ features, and monitor [APIM release announcements](https://github.com/Azure/API-
 #### Step 3 — Register and deploy the self-hosted gateway
 
 Create a self-hosted gateway registration in APIM, then deploy the generated container
-configuration to Docker or Kubernetes in the target on-premises environment.
+configuration to Docker or Kubernetes in the target customer-hosted environment. The
+same deployment model applies to on-premises infrastructure, AWS, GCP, edge locations,
+and other clouds that provide a supported container runtime and the required outbound
+connectivity.
 
 ![Self-hosted gateway registered under the classic APIM instance](docs/images/ai-gateway-self-hosted-apim-portal.png)
 
@@ -3156,13 +3167,13 @@ PUT /subscriptions/<subscription-id>/resourceGroups/<resource-group>/providers/
 Restart the evaluation container or wait for configuration synchronization. Its logs
 should show the gateway/API association and `ConfigInitialSyncCompleted`.
 
-#### Step 6 — Call the model through the on-premises gateway
+#### Step 6 — Call the model through the customer-hosted gateway
 
 Use the APIM project subscription key and the generated API path. In the validated
 environment, the generated subscription header was `api-key`.
 
 ```bash
-curl --resolve '<apim-name>.azure-api.net:8443:<on-prem-gateway-ip>' \
+curl --resolve '<apim-name>.azure-api.net:8443:<self-hosted-gateway-ip>' \
   -X POST "https://<apim-name>.azure-api.net:8443/<foundry-api-id>/openai/v1/responses" \
   -H "Content-Type: application/json" \
   -H "api-key: <project-subscription-key>" \
@@ -3174,12 +3185,12 @@ curl --resolve '<apim-name>.azure-api.net:8443:<on-prem-gateway-ip>' \
 ```
 
 The allowed test returned HTTP `200` and `SELF_HOSTED_OK`. The local gateway record
-included the on-premises gateway location, API ID, project product, backend URL, and
+included the customer-hosted gateway location, API ID, project product, backend URL, and
 `backendResponseCode: 200`.
 
 ### 16.5 Proving Local Token-Limit Enforcement
 
-To prove that the Foundry-created policy executes in the on-premises gateway rather
+To prove that the Foundry-created policy executes in the customer-hosted gateway rather
 than merely forwarding requests, configure a deliberately low test limit.
 
 1. In Foundry, open **Manage → AI Gateway**.
@@ -3209,7 +3220,7 @@ The validation sequence produced:
 The two denied self-hosted gateway records contained:
 
 ```text
-region:      <on-premises gateway location>
+region:      <self-hosted gateway location>
 response:    429
 source:      llm-token-limit
 reason:      OpenAITokenLimitExceeded
@@ -3218,7 +3229,7 @@ section:     inbound
 ```
 
 They did **not** contain `backendUrl`, `backendTime`, or `backendResponseCode`. This is
-the decisive proof that the policy stopped each request at the on-premises gateway
+the decisive proof that the policy stopped each request at the customer-hosted gateway
 before the Foundry model was called.
 
 ![Azure Monitor metrics showing OpenAITokenLimitExceeded at the self-hosted gateway](docs/images/ai-gateway-self-hosted-token-limit-metrics.png)
@@ -3259,12 +3270,12 @@ the Foundry token policy.
 APIM resource diagnostic settings apply to the Azure-managed gateway. The self-hosted
 gateway currently does **not** upload its diagnostic request logs into
 `ApiManagementGatewayLogs` or `AzureDiagnostics`. Enabling `allLogs` on the APIM
-resource therefore does not populate those tables with the on-premises container's
+resource therefore does not populate those tables with the customer-hosted container's
 request records.
 
 Detailed self-hosted request records remain in the container's standard output when
 `telemetry.logs.std=json` is configured. To centralize them, collect container stdout
-with the on-premises logging platform or an Azure Monitor Agent / OpenTelemetry pipeline.
+with the local logging platform or an Azure Monitor Agent / OpenTelemetry pipeline.
 Application Insights integration is optional and is not required for the native
 `OpenAITokenLimitExceeded` Metrics proof.
 
@@ -3273,8 +3284,8 @@ Application Insights integration is optional and is not required for the native
 - Use classic Developer only for evaluation. Design production deployments around
   supported Premium capacity, SLA, and high availability.
 - Pin a supported self-hosted gateway image version; do not use `latest` in production.
-- Put the gateway behind an on-premises load balancer or ingress controller and use a
-  trusted certificate for the production gateway hostname.
+- Put the gateway behind the target environment's load balancer or ingress controller
+  and use a trusted certificate for the production gateway hostname.
 - Run multiple gateway replicas and configure rate-limit synchronization where required.
 - Store gateway bootstrap tokens in a secret manager, keep their lifetime short, and
   rotate them. Prefer Microsoft Entra authentication where supported by the design.
@@ -3286,9 +3297,9 @@ Application Insights integration is optional and is not required for the native
   with separate Foundry credentials and network access from bypassing APIM.
 - Keep request and response body logging disabled unless the data classification and
   operational requirement explicitly permit prompt and completion capture.
-- Register on-premises agents in Foundry only when centralized agent governance or
-  trace correlation is needed. Gateway-based model governance works without agent
-  registration.
+- Register agents from on-premises, AWS, GCP, edge, or other clouds in Foundry only when
+  centralized agent governance or trace correlation is needed. Gateway-based model
+  governance works without agent registration.
 
 ### 16.8 Validation Checklist
 
@@ -3301,7 +3312,7 @@ Application Insights integration is optional and is not required for the native
 - [ ] The existing Foundry project shows gateway status `Enabled`.
 - [ ] The Foundry-generated API is assigned to the self-hosted gateway.
 - [ ] The gateway has synchronized the API, backend, product, subscription, and policy.
-- [ ] A valid-key model request through the on-premises gateway returns `200`.
+- [ ] A valid-key model request through the customer-hosted gateway returns `200`.
 - [ ] A deliberately invalid subscription key returns `401` without backend fields.
 - [ ] A temporary low token limit returns `429 OpenAITokenLimitExceeded` without backend
       fields.

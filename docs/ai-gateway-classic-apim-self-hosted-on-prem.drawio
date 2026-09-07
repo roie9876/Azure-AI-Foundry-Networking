@@ -1,18 +1,18 @@
 <mxfile host="app.diagrams.net" modified="2026-09-07T00:00:00.000Z" agent="GitHub Copilot" version="24.7.17" type="device">
-  <diagram id="ai-gateway-classic-self-hosted" name="Classic APIM with On-Premises Self-Hosted Gateway">
+  <diagram id="ai-gateway-classic-self-hosted" name="Classic APIM with Hybrid and Multicloud Self-Hosted Gateway">
     <mxGraphModel dx="1700" dy="1000" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1900" pageHeight="1100" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
 
-        <mxCell id="title" value="AI Gateway: Classic APIM with an On-Premises Self-Hosted Gateway" style="text;html=1;fontSize=28;fontStyle=1;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#111827;" parent="1" vertex="1">
+        <mxCell id="title" value="AI Gateway: Classic APIM with a Hybrid / Multicloud Self-Hosted Gateway" style="text;html=1;fontSize=28;fontStyle=1;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#111827;" parent="1" vertex="1">
           <mxGeometry x="220" y="25" width="1460" height="45" as="geometry" />
         </mxCell>
-        <mxCell id="subtitle" value="Azure provides the management plane; LLM traffic terminates and policy enforcement occurs in the on-premises gateway." style="text;html=1;fontSize=15;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#4b5563;" parent="1" vertex="1">
+        <mxCell id="subtitle" value="Azure provides the management plane; traffic terminates and policies execute wherever the customer deploys the gateway." style="text;html=1;fontSize=15;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#4b5563;" parent="1" vertex="1">
           <mxGeometry x="300" y="72" width="1300" height="30" as="geometry" />
         </mxCell>
 
-        <mxCell id="onprem-zone" value="ON-PREMISES NETWORK" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ecfdf5;strokeColor=#16a34a;strokeWidth=4;fontSize=18;fontStyle=1;align=center;verticalAlign=top;spacingTop=16;fontColor=#14532d;arcSize=8;" parent="1" vertex="1">
+        <mxCell id="onprem-zone" value="CUSTOMER-HOSTED ENVIRONMENT" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ecfdf5;strokeColor=#16a34a;strokeWidth=4;fontSize=18;fontStyle=1;align=center;verticalAlign=top;spacingTop=16;fontColor=#14532d;arcSize=8;" parent="1" vertex="1">
           <mxGeometry x="55" y="140" width="650" height="710" as="geometry" />
         </mxCell>
         <mxCell id="azure-control-zone" value="AZURE MANAGEMENT PLANE" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eff6ff;strokeColor=#2563eb;strokeWidth=4;fontSize=18;fontStyle=1;align=center;verticalAlign=top;spacingTop=16;fontColor=#1e3a8a;arcSize=8;" parent="1" vertex="1">
@@ -31,8 +31,8 @@
         <mxCell id="onprem-app-icon" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/general/Server_Farm.svg;" parent="1" vertex="1">
           <mxGeometry x="180" y="275" width="70" height="70" as="geometry" />
         </mxCell>
-        <mxCell id="onprem-app-label" value="&lt;b&gt;Applications and agents&lt;/b&gt;&lt;br&gt;running on-premises" style="text;html=1;fontSize=15;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#14532d;" parent="1" vertex="1">
-          <mxGeometry x="125" y="355" width="180" height="55" as="geometry" />
+        <mxCell id="onprem-app-label" value="&lt;b&gt;Applications and agents&lt;/b&gt;&lt;br&gt;on-premises, AWS, GCP,&lt;br&gt;edge, or another cloud" style="text;html=1;fontSize=15;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#14532d;" parent="1" vertex="1">
+          <mxGeometry x="115" y="350" width="200" height="75" as="geometry" />
         </mxCell>
 
         <mxCell id="shgw-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#0078d4;strokeWidth=3;arcSize=8;" parent="1" vertex="1">
@@ -47,10 +47,10 @@
         <mxCell id="shgw-functions" value="TLS termination&lt;br&gt;Authentication&lt;br&gt;LLM token limits and quotas&lt;br&gt;Routing and other APIM policies" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eff6ff;strokeColor=#93c5fd;fontSize=13;align=left;verticalAlign=middle;spacingLeft=14;fontColor=#1e3a8a;arcSize=8;" parent="1" vertex="1">
           <mxGeometry x="435" y="415" width="190" height="110" as="geometry" />
         </mxCell>
-        <mxCell id="blocked-box" value="&lt;b&gt;BLOCKED LOCALLY&lt;/b&gt;&lt;br&gt;429 OpenAITokenLimitExceeded&lt;br&gt;No backend LLM call" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fee2e2;strokeColor=#c62828;strokeWidth=2;fontSize=14;align=center;verticalAlign=middle;fontColor=#991b1b;arcSize=8;" parent="1" vertex="1">
+        <mxCell id="blocked-box" value="&lt;b&gt;BLOCKED AT GATEWAY LOCATION&lt;/b&gt;&lt;br&gt;429 OpenAITokenLimitExceeded&lt;br&gt;No backend LLM call" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fee2e2;strokeColor=#c62828;strokeWidth=2;fontSize=14;align=center;verticalAlign=middle;fontColor=#991b1b;arcSize=8;" parent="1" vertex="1">
           <mxGeometry x="405" y="650" width="250" height="105" as="geometry" />
         </mxCell>
-        <mxCell id="onprem-note" value="The self-hosted gateway can run on Docker, Kubernetes, or another supported container platform. It is not an Azure compute resource." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dcfce7;strokeColor=#86efac;fontSize=13;align=center;verticalAlign=middle;fontColor=#14532d;arcSize=8;" parent="1" vertex="1">
+        <mxCell id="onprem-note" value="Deploy on-premises, in AWS, GCP, at the edge, or in any supported Docker / Kubernetes environment. The gateway data plane is customer-hosted." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dcfce7;strokeColor=#86efac;fontSize=13;align=center;verticalAlign=middle;fontColor=#14532d;arcSize=8;" parent="1" vertex="1">
           <mxGeometry x="105" y="790" width="550" height="42" as="geometry" />
         </mxCell>
 
@@ -66,7 +66,7 @@
         <mxCell id="apim-label" value="&lt;b&gt;Azure API Management&lt;/b&gt;&lt;br&gt;Classic v1: Developer or Premium&lt;br&gt;AI Gateway Early channel (preview)" style="text;html=1;fontSize=14;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#1e3a8a;" parent="1" vertex="1">
           <mxGeometry x="990" y="305" width="255" height="80" as="geometry" />
         </mxCell>
-        <mxCell id="control-note" value="Stores APIs, backends, subscriptions, and policies. The Azure-managed gateway is not on the on-premises LLM traffic path shown here." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dbeafe;strokeColor=#93c5fd;fontSize=13;align=center;verticalAlign=middle;fontColor=#1e3a8a;arcSize=8;" parent="1" vertex="1">
+        <mxCell id="control-note" value="Stores APIs, backends, subscriptions, and policies. The Azure-managed gateway is not on the customer-hosted LLM traffic path shown here." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dbeafe;strokeColor=#93c5fd;fontSize=13;align=center;verticalAlign=middle;fontColor=#1e3a8a;arcSize=8;" parent="1" vertex="1">
           <mxGeometry x="830" y="430" width="410" height="70" as="geometry" />
         </mxCell>
 
@@ -76,7 +76,7 @@
         <mxCell id="monitor-label" value="&lt;b&gt;Azure Monitor Metrics&lt;/b&gt;&lt;br&gt;Requests, gateway duration,&lt;br&gt;backend duration, last error reason" style="text;html=1;fontSize=14;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#334155;" parent="1" vertex="1">
           <mxGeometry x="810" y="725" width="175" height="75" as="geometry" />
         </mxCell>
-        <mxCell id="metrics-example" value="&lt;b&gt;Enforcement evidence&lt;/b&gt;&lt;br&gt;Location: on-premises gateway&lt;br&gt;Last Error Reason:&lt;br&gt;OpenAITokenLimitExceeded" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f1f5f9;strokeColor=#94a3b8;fontSize=13;align=left;verticalAlign=middle;spacingLeft=14;fontColor=#334155;arcSize=8;" parent="1" vertex="1">
+        <mxCell id="metrics-example" value="&lt;b&gt;Enforcement evidence&lt;/b&gt;&lt;br&gt;Location: customer-hosted gateway&lt;br&gt;Last Error Reason:&lt;br&gt;OpenAITokenLimitExceeded" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f1f5f9;strokeColor=#94a3b8;fontSize=13;align=left;verticalAlign=middle;spacingLeft=14;fontColor=#334155;arcSize=8;" parent="1" vertex="1">
           <mxGeometry x="1025" y="635" width="220" height="145" as="geometry" />
         </mxCell>
         <mxCell id="logs-note" value="Native cloud metrics: yes. ApiManagementGatewayLogs for self-hosted runtime: no; detailed request logs remain local unless separately exported." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff9cc;strokeColor=#d6b656;fontSize=12;align=center;verticalAlign=middle;fontColor=#6b4f00;arcSize=8;" parent="1" vertex="1">
@@ -92,7 +92,7 @@
         <mxCell id="llm-box" value="&lt;b&gt;LLM deployment&lt;/b&gt;&lt;br&gt;OpenAI-compatible Responses / Chat Completions API" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#f97316;strokeWidth=2;fontSize=15;align=center;verticalAlign=middle;fontColor=#7c2d12;arcSize=8;" parent="1" vertex="1">
           <mxGeometry x="1460" y="465" width="295" height="105" as="geometry" />
         </mxCell>
-        <mxCell id="model-note" value="The model remains hosted in Microsoft Foundry. Only the gateway data plane is self-hosted on-premises." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffedd5;strokeColor=#fdba74;fontSize=13;align=center;verticalAlign=middle;fontColor=#7c2d12;arcSize=8;" parent="1" vertex="1">
+        <mxCell id="model-note" value="The model remains hosted in Microsoft Foundry. Only the gateway data plane is self-hosted in the selected customer environment." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffedd5;strokeColor=#fdba74;fontSize=13;align=center;verticalAlign=middle;fontColor=#7c2d12;arcSize=8;" parent="1" vertex="1">
           <mxGeometry x="1440" y="700" width="335" height="70" as="geometry" />
         </mxCell>
 
@@ -133,7 +133,7 @@
         <mxCell id="legend" value="&lt;b&gt;Legend&lt;/b&gt;&amp;nbsp;&amp;nbsp; Blue: LLM data traffic &amp;nbsp;&amp;nbsp; Amber dashed: management/configuration &amp;nbsp;&amp;nbsp; Indigo dashed: metrics &amp;nbsp;&amp;nbsp; Red: blocked locally" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d1d5db;fontSize=13;align=center;verticalAlign=middle;fontColor=#374151;arcSize=8;" parent="1" vertex="1">
           <mxGeometry x="300" y="915" width="1300" height="48" as="geometry" />
         </mxCell>
-        <mxCell id="isolation-note" value="&lt;b&gt;Boundary rule:&lt;/b&gt; APIM in Azure manages configuration. Client-to-model data traffic does not traverse the Azure-managed APIM gateway; it is processed by the on-premises self-hosted gateway." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff9cc;strokeColor=#d6b656;fontSize=14;align=center;verticalAlign=middle;fontColor=#6b4f00;arcSize=8;" parent="1" vertex="1">
+        <mxCell id="isolation-note" value="&lt;b&gt;Boundary rule:&lt;/b&gt; APIM in Azure manages configuration. Client-to-model data traffic does not traverse the Azure-managed gateway; it is processed in the customer-selected on-premises, AWS, GCP, edge, or other-cloud environment." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff9cc;strokeColor=#d6b656;fontSize=14;align=center;verticalAlign=middle;fontColor=#6b4f00;arcSize=8;" parent="1" vertex="1">
           <mxGeometry x="300" y="980" width="1300" height="60" as="geometry" />
         </mxCell>
       </root>
