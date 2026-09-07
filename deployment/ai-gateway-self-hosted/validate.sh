@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="${ENV_FILE:-$SCRIPT_DIR/demo.env}"
+
+if [[ -f "$ENV_FILE" ]]; then
+  set -a
+  source "$ENV_FILE"
+  set +a
+fi
+
+SUBSCRIPTION_ID="${SUBSCRIPTION_ID:-00000000-0000-0000-0000-000000000000}"
+LOCATION="${LOCATION:-swedencentral}"
+RESOURCE_GROUP="${RESOURCE_GROUP:-rg-aigw-shgw-demo}"
+SUFFIX="${SUFFIX:-demo1234}"
+APIM_NAME="apim-aigw-shgw-${SUFFIX}"
+AI_ACCOUNT_NAME="aif-aigw-shgw-${SUFFIX}"
+CONTAINER_APP_NAME="ca-shgw-demo"
+GATEWAY_NAME="shgw-demo"
+MODE="${1:-preflight}"
+
+case "$MODE" in
+  preflight|deployed|functional|ui) ;;
+  *) echo "Usage: $0 [preflight|deployed|functional|ui]" >&2; exit 2 ;;
+esac
+
+for command_name in az jq curl; do
+  command -v "$command_name" >/dev/null 2>&1 || {
+    echo "[ERROR] Required command not found: $command_name" >&2
+    exit 1
+  }
+done
+
+az account set --subscription "$SUBSCRIPTION_ID"
+
+preflight() {
+  echo "[CHECK] Shell syntax"
+  bash -n "$SCRIPT_DIR/deploy.sh" "$SCRIPT_DIR/validate.sh" "$SCRIPT_DIR/cleanup.sh"
+
+  echo "[CHECK] Bicep build and lint"
+  az bicep build --file "$SCRIPT_DIR/main.bicep" --stdout >/dev/null
+  az bicep lint --file "$SCRIPT_DIR/main.bicep"
+
+  echo "[CHECK] Required providers"
+  for namespace in Microsoft.ApiManagement Microsoft.App Microsoft.CognitiveServices Microsoft.OperationalInsights; do
+    state="$(az provider show --namespace "$namespace" --query registrationState -o tsv)"
+    [[ "$state" == 'Registered' ]] || { echo "[ERROR] $namespace is $state" >&2; exit 1; }
+  done
+
+  echo "[CHECK] Model support and quota"
+  sku_count="$(az cognitiveservices model list --location "$LOCATION" -o json | jq '[.[] | select(.model.name == "gpt-4.1-mini" and .model.version == "2025-04-14") | .model.skus[] | select(.name == "GlobalStandard")] | length')"
+  [[ "$sku_count" -gt 0 ]] || { echo '[ERROR] GPT-4.1-mini GlobalStandard is unavailable' >&2; exit 1; }
+  quota="$(az cognitiveservices usage list --location "$LOCATION" -o json | jq '[.[] | select(.name.value == "OpenAI.GlobalStandard.gpt4.1-mini")][0] | .limit - .currentValue')"
+  [[ "${quota%.*}" -ge 10 ]] || { echo "[ERROR] Available GPT-4.1-mini quota is $quota" >&2; exit 1; }
+
+  echo "[CHECK] ARM validation"
+  az deployment sub validate \
+    --location "$LOCATION" \
+    --template-file "$SCRIPT_DIR/main.bicep" \
+    --parameters "$SCRIPT_DIR/main.bicepparam" \
+    --parameters deployGatewayContainer=false \
+    --output none
+
+  echo "[CHECK] ARM what-if"
+  az deployment sub what-if \
+    --location "$LOCATION" \
+    --template-file "$SCRIPT_DIR/main.bicep" \
+    --parameters "$SCRIPT_DIR/main.bicepparam" \
+    --parameters deployGatewayContainer=false \
+    --result-format ResourceIdOnly
+
+  echo "[OK] Preflight passed"
+}
+
+deployed() {
+  echo "[CHECK] Provisioning states"
+  az resource list --resource-group "$RESOURCE_GROUP" \
+    --query '[].{name:name,type:type,state:properties.provisioningState}' --output table
+
+  [[ "$(az apim show --name "$APIM_NAME" --resource-group "$RESOURCE_GROUP" --query provisioningState -o tsv)" == 'Succeeded' ]]
+  [[ "$(az cognitiveservices account show --name "$AI_ACCOUNT_NAME" --resource-group "$RESOURCE_GROUP" --query properties.provisioningState -o tsv)" == 'Succeeded' ]]
+
+  fqdn="$(az containerapp show --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" --query properties.configuration.ingress.fqdn -o tsv)"
+  [[ -n "$fqdn" ]]
+  curl --http1.1 --fail --silent --show-error --connect-timeout 10 --max-time 30 \
+    "https://${fqdn}/status-0123456789abcdef" >/dev/null
+
+  gateway_state="$(az rest --method get --url "https://management.azure.com/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${RESOURCE_GROUP}/providers/Microsoft.ApiManagement/service/${APIM_NAME}/gateways/${GATEWAY_NAME}?api-version=2024-05-01" --query properties.provisioningState -o tsv)"
+  [[ "$gateway_state" == 'Succeeded' ]]
+  echo "[OK] Deployed resources and gateway health are ready: https://${fqdn}"
+}
+
+functional() {
+  : "${FOUNDRY_API_ID:?Set FOUNDRY_API_ID in $ENV_FILE}"
+  : "${FOUNDRY_API_PATH:?Set FOUNDRY_API_PATH in $ENV_FILE}"
+  : "${APIM_SUBSCRIPTION_ID:?Set APIM_SUBSCRIPTION_ID in $ENV_FILE}"
+
+  api_assigned="$(az rest --method get \
+    --url "https://management.azure.com/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${RESOURCE_GROUP}/providers/Microsoft.ApiManagement/service/${APIM_NAME}/gateways/${GATEWAY_NAME}/apis?api-version=2024-05-01" \
+    --query "value[?name=='${FOUNDRY_API_ID}'].name | [0]" --output tsv)"
+  [[ "$api_assigned" == "$FOUNDRY_API_ID" ]]
+
+  subscription_key="$(az rest --method post \
+    --url "https://management.azure.com/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${RESOURCE_GROUP}/providers/Microsoft.ApiManagement/service/${APIM_NAME}/subscriptions/${APIM_SUBSCRIPTION_ID}/listSecrets?api-version=2024-05-01" \
+    --query primaryKey --output tsv)"
+  fqdn="$(az containerapp show --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" --query properties.configuration.ingress.fqdn -o tsv)"
+  response_file="$(mktemp)"
+  trap 'rm -f "$response_file"; unset subscription_key' EXIT
+
+  http_code="$(curl --silent --show-error --output "$response_file" --write-out '%{http_code}' \
+    --request POST "https://${fqdn}/${FOUNDRY_API_PATH#/}/openai/v1/responses" \
+    --header 'Content-Type: application/json' \
+    --header "api-key: ${subscription_key}" \
+    --data '{"model":"gpt-4.1-mini","input":"Reply with exactly SELF_HOSTED_AZURE_OK","max_output_tokens":50}')"
+  [[ "$http_code" == '200' ]] || { echo "[ERROR] Model call returned HTTP $http_code" >&2; jq . "$response_file"; exit 1; }
+  jq -e '.. | strings | select(contains("SELF_HOSTED_AZURE_OK"))' "$response_file" >/dev/null
+  echo "[OK] Functional model call passed through https://${fqdn}"
+}
+
+ui() {
+  fqdn="$(az containerapp show --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" --query properties.configuration.ingress.fqdn -o tsv)"
+  response_file="$(mktemp)"
+  trap 'rm -f "$response_file"' EXIT
+
+  curl --http1.1 --fail --silent --show-error --connect-timeout 10 --max-time 30 \
+    "https://${fqdn}/" | grep -q 'Ask the model'
+  http_code="$(curl --http1.1 --silent --show-error --connect-timeout 10 --max-time 90 \
+    --output "$response_file" --write-out '%{http_code}' \
+    --request POST "https://${fqdn}/api/run" \
+    --header 'Content-Type: application/json' \
+    --data '{"prompt":"Reply with exactly UI_DEMO_OK"}')"
+  [[ "$http_code" == '200' ]] || { echo "[ERROR] UI call returned HTTP $http_code" >&2; jq . "$response_file"; exit 1; }
+  jq -e '.text | contains("UI_DEMO_OK")' "$response_file" >/dev/null
+  echo "[OK] End-user UI and model call passed: https://${fqdn}/"
+}
+
+case "$MODE" in
+  preflight) preflight ;;
+  deployed) deployed ;;
+  functional) functional ;;
+  ui) ui ;;
+esac
