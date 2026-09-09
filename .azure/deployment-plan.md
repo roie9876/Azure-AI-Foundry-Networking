@@ -2,7 +2,7 @@
 
 ## Status
 
-Deployed and verified on 2026-09-07.
+Deployed and verified on 2026-09-09 with APIM using the customer-hosted Content Safety container. The temporary managed fallback account was subsequently deleted.
 
 ## Target
 
@@ -21,6 +21,11 @@ Deployed and verified on 2026-09-07.
 - Surface native Azure Monitor metrics for successful and blocked calls.
 - Avoid storing gateway tokens, model keys, or subscription keys in source control.
 - Include repeatable infrastructure/configuration and cleanup instructions.
+- Inspect every Responses API prompt with Azure AI Content Safety before forwarding it to the model.
+- Block prompts with medium-or-higher severity in Hate, SelfHarm, Sexual, or Violence and return a demonstrable HTTP 403 response.
+- Apply the management-group policy exemption tag `SecurityControl=Ignore` to only the dedicated Content Safety account, enable local authentication, and use its key only as the connected container's metering credential.
+- Run the Content Safety image as a CPU lab Container App in the existing environment, then route APIM inspection to that internal endpoint only after it is healthy.
+- Add one `D4` workload profile named `cs-d4` with zero minimum and one maximum node because the Microsoft image exceeds the Consumption profile's 8 GB image limit. Assign only `ca-content-safety` to this profile.
 
 ## Discovery Findings
 
@@ -46,6 +51,19 @@ APIM self-hosted gateway (one replica)
 	| generated AI Gateway API and policies
 	v
 Microsoft Foundry project / GPT-4.1-mini deployment
+
+The Content Safety extension adds this synchronous inbound path before the
+generated AI Gateway API policy forwards an allowed request to the model:
+
+APIM self-hosted gateway
+	|
+	| internal HTTPS /text:analyze
+	v
+Azure AI Content Safety managed endpoint
+	|
+	| severity below threshold: continue; otherwise HTTP 403
+	v
+Generated Foundry API policy
 
 Classic APIM Developer remains the cloud control plane. The self-hosted gateway
 polls its configuration endpoint and publishes heartbeat and metrics to Azure.
@@ -76,8 +94,11 @@ Names with `<suffix>` receive one generated lowercase suffix during deployment a
 | Container registry | `acraigwshgw<suffix>` | Basic private registry for the end-user UI image |
 | Container Apps environment | `cae-aigw-shgw-<suffix>` | Consumption workload profile |
 | Container app | `ca-shgw-demo` | Public UI on port 3000 plus local gateway sidecar on port 8080 |
+| Content Safety billing account | `csc-aigw-shgw-<suffix>` | S0 account used only for connected-container licensing and metering |
 
 No VNet, private endpoint, Key Vault, storage account, or custom domain is required. A Basic ACR stores the private end-user UI image.
+
+The preview container requires an API key for metering, but this tenant enforces `disableLocalAuth=true`. The selected managed endpoint uses the built-in `llm-content-safety` APIM policy and keyless managed-identity authentication instead.
 
 ## Planned Artifacts
 
@@ -109,6 +130,10 @@ Indicative USD retail cost for a continuously available demo, before tax and agr
 
 Expected baseline: approximately `$62/month` plus model tokens, logs, and any network charges. Deleting `rg-aigw-shgw-demo` stops all recurring demo infrastructure charges.
 
+The Content Safety extension adds S0 request charges. No additional container compute is deployed.
+
+The customer-hosted container adds D4 dedicated-profile charges while its node is allocated. The profile allows zero nodes, but this demo's `minReplicas=1` keeps one D4 node allocated until the app is stopped or removed.
+
 ## Validation
 
 Recipe type: Bicep, subscription scope.
@@ -124,6 +149,14 @@ Recipe type: Bicep, subscription scope.
 - [x] Subscription-scope what-if contains only expected creates inside `rg-aigw-shgw-demo` and no deletes.
 - [x] Azure Policy assignments have been reviewed for blocking effects.
 - [x] Static RBAC review confirms APIM receives Cognitive Services User on only the new Foundry account.
+- [x] Content Safety S0 is available in Sweden Central and the pinned `text-analyze:1.0.0-amd64-preview` image manifest is available from MCR.
+- [x] The isolated Content Safety Bicep module builds and lints without warnings.
+- [x] Resource-group ARM validation succeeds against the existing APIM product and Container Apps environment.
+- [x] Resource-group what-if contains two creates and one product-policy deployment, with no deletes or changes to the existing gateway or Foundry resources.
+- [x] The custom policy is inherited at product scope and leaves the Foundry-generated API routing policy unchanged.
+- [x] The effective `CognitiveServices_LocalAuth_Modify` policy was inspected and confirms `SecurityControl=Ignore` bypasses the local-auth modification at resource or resource-group scope.
+- [x] The account-only Bicep module builds and lints cleanly with the exemption tag and `disableLocalAuth=false`.
+- [x] ARM validation passes and what-if shows one in-place local-auth modification, zero creates, and zero deletes.
 
 Pre-deployment checks:
 
@@ -147,6 +180,38 @@ Post-deployment proof:
 
 ## Section 7: Validation Proof
 
+Content Safety extension validation date: 2026-09-09.
+
+Container retry validation date: 2026-09-09.
+
+- Policy rule: management-group definition `CognitiveServices_LocalAuth_Modify` excludes resources when `tags['SecurityControl'] == 'Ignore'`; defaults resolve to the exact requested name and value.
+- Final account IaC: `content-safety-container-account.bicep` sets `SecurityControl: Ignore` and `disableLocalAuth: false` only on `csc-aigw-shgw-demo1234`.
+- Local validation: Bicep build and lint passed with no template warnings; `git diff --check` passed.
+- ARM validation: resource-group validation passed.
+- ARM what-if: one in-place modification (`disableLocalAuth: true => false`), zero creates, zero deletes, and all unrelated resources ignored.
+- Staged cutover: the verified managed Content Safety policy remains active until key listing, container readiness, direct container classification, and public `200/403` behavior pass.
+- Container module: `content-safety-container.bicep` builds and lints cleanly with the key modeled as a secure parameter and internal-only ingress.
+- Container preflight initially rejected a 120-second liveness delay; it was corrected to the platform maximum of 60 seconds and revalidated.
+- Container ARM validation passed. Final what-if shows one create (`ca-content-safety`), zero modifications, zero deletes, and eight existing resources ignored.
+- First Consumption deployment proved the image exceeds the 8 GB per-replica image limit (`ImagePullFailure: no space left on device`). Sweden Central supports D4, and the existing environment supports adding dedicated profiles. The corrected app targets `cs-d4` with 4 vCPU and 16 GiB.
+- D4 remediation validation: `az containerapp env workload-profile list-supported --location swedencentral` confirmed D4 with 4 vCPU/16 GiB; Bicep build/lint and whitespace checks passed. The change adds one profile and moves only the failed `ca-content-safety` revision; existing gateway/UI traffic remains on Consumption.
+- Container runtime proof: image size 8,995,255,477 bytes pulled successfully on D4; billing returned HTTP 200; model decrypted and initialized on CPU; revision became healthy and listened on port 5000.
+- Internal API proof: `/ready` returned HTTP 200; `/contentsafety/text:analyze` returned HTTP 200 for safe and Hebrew violence prompts, with violence severity 5 for the demo prompt.
+- APIM cutover validation: parameterized policy compiles and passes ARM validation with the internal FQDN, no managed-identity header, and `FourSeverityLevels`. Empty endpoint/default authentication parameters restore the managed Azure endpoint.
+- Container billing isolation: the original account was created while local auth was policy-disabled; although regenerated Key1 works for inference, connected-container metering returns 403. A new `csc-aigw-shgw-demo1234` account will be created with `SecurityControl=Ignore` and local auth enabled from initial creation.
+- Container billing account validation: Bicep build/lint and ARM validation passed; what-if shows one create (`csc-aigw-shgw-demo1234`), zero modifications, zero deletes, and nine existing resources ignored.
+
+- Authentication: Azure CLI resolved subscription `00000000-0000-0000-0000-000000000000`, tenant `00000000-0000-0000-0000-000000000000`, and user `admin@example.com`.
+- Image: `docker manifest inspect mcr.microsoft.com/azure-cognitive-services/contentsafety/text-analyze:1.0.0-amd64-preview` passed.
+- SKU: `az cognitiveservices account list-skus --kind ContentSafety --location swedencentral` returned S0 Standard.
+- Local build: `az bicep build` and `az bicep lint` passed for `content-safety.bicep` and the original `main.bicep`, with no template warnings.
+- Script validation: `bash -n deploy.sh validate.sh` passed.
+- ARM validation: `az deployment group validate` passed against `rg-aigw-shgw-demo` with the existing APIM product and Container Apps environment.
+- Initial ARM what-if covered the proposed container path. Deployment discovery showed the tenant enforces `disableLocalAuth=true`, while the preview container requires an API key for metering. The user selected the managed endpoint fallback.
+- Final managed deployment created `cs-aigw-shgw-demo1234`, assigned least-privilege data-plane roles, and deployed the generated product policy with no resource deletion.
+- Static RBAC: no new role assignment is required. The Content Safety key is scoped to the dedicated metering account and injected into the internal Container App secret store.
+- Post-deployment checks are defined in `validate.sh safety`: internal-only ingress, policy presence, safe HTTP 200, violent HTTP 403, blocking header, and `ContentSafetyViolation` response.
+
 Validation date: 2026-09-07.
 
 - Target confirmation: Azure CLI resolved subscription `00000000-0000-0000-0000-000000000000`; the signed-in principal has subscription Owner.
@@ -163,6 +228,19 @@ Validation date: 2026-09-07.
 - Secret review: gateway and APIM subscription keys are held in process memory, are not echoed, and are not written to repository configuration.
 
 ## Deployment Proof
+
+- Recovery proof: accidental deletion of `csc-aigw-shgw-demo1234` caused billing DNS failures and APIM `send-request` timeouts. The soft-deleted account was recovered with its tag, local-auth setting, endpoint, and keys intact; internal validation passed, then public requests returned HTTP 200/403 as expected.
+- Container-only Content Safety account `csc-aigw-shgw-demo1234` was created with `SecurityControl=Ignore` and local authentication enabled from inception; its initial key passed direct API validation and connected-container metering returned HTTP 200.
+- Container App `ca-content-safety` runs `text-analyze:latest` on dedicated profile `cs-d4` with 4 vCPU, 16 GiB, CPU inference, internal-only ingress, and a healthy ready revision.
+- Internal `/ready` returned HTTP 200. Direct container analysis scored the Hebrew demo prompt as violence severity 5.
+- Live APIM product policy targets the internal Container App FQDN, uses `FourSeverityLevels`, and sends no cloud authentication header.
+- Public gateway and browser UI validation returned HTTP 200 for safe prompts and HTTP 403 for the Hebrew violence prompt.
+- Container logs recorded the final APIM/UI analysis calls locally with approximately 265–317 ms model time.
+- The temporary managed fallback account `cs-aigw-shgw-demo1234` was deleted after local-container validation completed.
+- APIM and the Azure-hosted self-hosted gateway runtime identities have `Cognitive Services User` scoped only to the Content Safety account.
+- The generated product policy sends an isolated managed-identity request to Content Safety, preventing the Foundry `api-key` subscription header from overriding bearer authentication.
+- Direct public gateway validation returned HTTP `200` for a safe prompt and HTTP `403` with `ContentSafetyViolation` for a violent prompt.
+- Public UI validation returned HTTP `200` with `UI_CONTENT_SAFETY_SAFE_OK` for a safe prompt and HTTP `403` with `Prompt blocked by Azure AI Content Safety.` for a violent prompt.
 
 - Subscription deployments `aigw-shgw-demo` and `aigw-shgw-demo-container` succeeded.
 - All resources were created only in `rg-aigw-shgw-demo` in Sweden Central.

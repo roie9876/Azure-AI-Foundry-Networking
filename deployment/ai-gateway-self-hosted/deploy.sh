@@ -22,11 +22,15 @@ GATEWAY_NAME="shgw-demo"
 DEPLOYMENT_NAME="aigw-shgw-demo"
 REGISTRY_NAME="acraigwshgw${SUFFIX}"
 UI_IMAGE_REPOSITORY="aigw-demo-ui"
+CONTENT_SAFETY_CONTAINER_ACCOUNT_NAME="csc-aigw-shgw-${SUFFIX}"
+CONTENT_SAFETY_APP_NAME="ca-content-safety"
+CONTENT_SAFETY_PROFILE_NAME="cs-d4"
+CONTAINER_ENVIRONMENT_NAME="cae-aigw-shgw-${SUFFIX}"
 MODE="${1:-all}"
 
 case "$MODE" in
-  infra|gateway|ui|assign|all) ;;
-  *) echo "Usage: $0 [infra|gateway|ui|assign|all]" >&2; exit 2 ;;
+  infra|gateway|ui|assign|safety-container|safety-local|all) ;;
+  *) echo "Usage: $0 [infra|gateway|ui|assign|safety-container|safety-local|all]" >&2; exit 2 ;;
 esac
 
 for command_name in az jq curl; do
@@ -159,11 +163,118 @@ assign_foundry_api() {
   echo "[OK] API assigned. Allow up to two minutes for gateway synchronization."
 }
 
+deploy_content_safety_container() {
+  local content_safety_key billing_endpoint latest_revision stale_revision revision_suffix
+
+  echo "[INFO] Deploying the tagged container-only Content Safety metering account"
+  az deployment group create \
+    --name "${DEPLOYMENT_NAME}-content-safety-container-account" \
+    --resource-group "$RESOURCE_GROUP" \
+    --template-file "$SCRIPT_DIR/content-safety-container-account.bicep" \
+    --parameters location="$LOCATION" suffix="$SUFFIX" \
+    --output none
+
+  if [[ "${ROTATE_CONTENT_SAFETY_KEY:-false}" == 'true' ]]; then
+    echo "[INFO] Regenerating Key1 after enabling local authentication"
+    az cognitiveservices account keys regenerate \
+      --resource-group "$RESOURCE_GROUP" \
+      --name "$CONTENT_SAFETY_CONTAINER_ACCOUNT_NAME" \
+      --key-name Key1 \
+      --output none
+  fi
+
+  if [[ "$(az containerapp env workload-profile list --name "$CONTAINER_ENVIRONMENT_NAME" --resource-group "$RESOURCE_GROUP" --query "[?name=='${CONTENT_SAFETY_PROFILE_NAME}'] | length(@)" --output tsv)" -eq 0 ]]; then
+    echo "[INFO] Adding the D4 workload profile for the large Content Safety image"
+    az containerapp env workload-profile add \
+      --name "$CONTAINER_ENVIRONMENT_NAME" \
+      --resource-group "$RESOURCE_GROUP" \
+      --workload-profile-name "$CONTENT_SAFETY_PROFILE_NAME" \
+      --workload-profile-type D4 \
+      --min-nodes 0 \
+      --max-nodes 1 \
+      --output none
+  fi
+
+  if az containerapp show --name "$CONTENT_SAFETY_APP_NAME" --resource-group "$RESOURCE_GROUP" --output none 2>/dev/null; then
+    latest_revision="$(az containerapp show --name "$CONTENT_SAFETY_APP_NAME" --resource-group "$RESOURCE_GROUP" --query properties.latestRevisionName --output tsv)"
+    while IFS= read -r stale_revision; do
+      [[ -z "$stale_revision" || "$stale_revision" == "$latest_revision" ]] && continue
+      az containerapp revision deactivate \
+        --name "$CONTENT_SAFETY_APP_NAME" \
+        --resource-group "$RESOURCE_GROUP" \
+        --revision "$stale_revision" \
+        --output none
+    done < <(az containerapp revision list --name "$CONTENT_SAFETY_APP_NAME" --resource-group "$RESOURCE_GROUP" --query '[?properties.active].name' --output tsv)
+  fi
+
+  content_safety_key="$(az cognitiveservices account keys list --resource-group "$RESOURCE_GROUP" --name "$CONTENT_SAFETY_CONTAINER_ACCOUNT_NAME" --query key1 --output tsv)"
+  billing_endpoint="$(az cognitiveservices account show --resource-group "$RESOURCE_GROUP" --name "$CONTENT_SAFETY_CONTAINER_ACCOUNT_NAME" --query properties.endpoint --output tsv)"
+  revision_suffix="$(date -u '+%Y%m%d%H%M%S')"
+  echo "[INFO] Deploying the internal Content Safety container on D4"
+  az deployment group create \
+    --name "${DEPLOYMENT_NAME}-content-safety-container" \
+    --resource-group "$RESOURCE_GROUP" \
+    --template-file "$SCRIPT_DIR/content-safety-container.bicep" \
+    --parameters \
+      location="$LOCATION" \
+      containerEnvironmentName="$CONTAINER_ENVIRONMENT_NAME" \
+      workloadProfileName="$CONTENT_SAFETY_PROFILE_NAME" \
+      contentSafetyKey="$content_safety_key" \
+      contentSafetyBillingEndpoint="$billing_endpoint" \
+      revisionSuffix="$revision_suffix" \
+    --output none
+  unset content_safety_key
+
+  latest_revision="$(az containerapp show --name "$CONTENT_SAFETY_APP_NAME" --resource-group "$RESOURCE_GROUP" --query properties.latestRevisionName --output tsv)"
+  while IFS= read -r stale_revision; do
+    [[ -z "$stale_revision" || "$stale_revision" == "$latest_revision" ]] && continue
+    az containerapp revision deactivate \
+      --name "$CONTENT_SAFETY_APP_NAME" \
+      --resource-group "$RESOURCE_GROUP" \
+      --revision "$stale_revision" \
+      --output none
+  done < <(az containerapp revision list --name "$CONTENT_SAFETY_APP_NAME" --resource-group "$RESOURCE_GROUP" --query '[?properties.active].name' --output tsv)
+
+  echo "[OK] Content Safety container deployment submitted. Managed APIM safety routing is unchanged."
+}
+
+use_content_safety_container() {
+  : "${APIM_SUBSCRIPTION_ID:?Set APIM_SUBSCRIPTION_ID in $ENV_FILE after Foundry association}"
+  local subscription_scope foundry_product_id safety_fqdn latest_ready_revision
+  latest_ready_revision="$(az containerapp show --name "$CONTENT_SAFETY_APP_NAME" --resource-group "$RESOURCE_GROUP" --query properties.latestReadyRevisionName --output tsv)"
+  [[ -n "$latest_ready_revision" ]] || { echo '[ERROR] Content Safety container has no ready revision' >&2; exit 1; }
+  [[ "$(az containerapp revision show --name "$CONTENT_SAFETY_APP_NAME" --resource-group "$RESOURCE_GROUP" --revision "$latest_ready_revision" --query properties.healthState --output tsv)" == 'Healthy' ]] || {
+    echo "[ERROR] Content Safety revision $latest_ready_revision is not healthy" >&2
+    exit 1
+  }
+
+  subscription_scope="$(az rest --method get \
+    --url "https://management.azure.com/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${RESOURCE_GROUP}/providers/Microsoft.ApiManagement/service/${APIM_NAME}/subscriptions/${APIM_SUBSCRIPTION_ID}?api-version=2024-05-01" \
+    --query properties.scope --output tsv)"
+  [[ "$subscription_scope" == */products/* ]]
+  foundry_product_id="${subscription_scope##*/}"
+  safety_fqdn="$(az containerapp show --name "$CONTENT_SAFETY_APP_NAME" --resource-group "$RESOURCE_GROUP" --query properties.configuration.ingress.fqdn --output tsv)"
+
+  echo "[INFO] Routing APIM Content Safety checks to the internal container"
+  az deployment group create \
+    --name "${DEPLOYMENT_NAME}-content-safety" \
+    --resource-group "$RESOURCE_GROUP" \
+    --template-file "$SCRIPT_DIR/content-safety.bicep" \
+    --parameters \
+      apimName="$APIM_NAME" \
+      foundryProductId="$foundry_product_id" \
+      contentSafetyEndpoint="https://${safety_fqdn}" \
+    --output none
+  echo "[OK] APIM now uses the customer-hosted Content Safety container."
+}
+
 case "$MODE" in
   infra) deploy_infrastructure ;;
   gateway) deploy_gateway_container false ;;
   ui) deploy_gateway_container true ;;
   assign) assign_foundry_api ;;
+  safety-container) deploy_content_safety_container ;;
+  safety-local) use_content_safety_container ;;
   all)
     deploy_infrastructure
     deploy_gateway_container false

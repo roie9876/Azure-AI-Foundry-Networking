@@ -48,6 +48,56 @@ Validate the end-user flow:
 ./validate.sh ui
 ```
 
+## Content Safety demo
+
+The customer-hosted path runs the Microsoft Content Safety image inside the same Container Apps environment as the self-hosted gateway. The Azure Content Safety account is used only for licensing and metering.
+
+The management-group policy normally forces `disableLocalAuth=true`. This lab applies `SecurityControl=Ignore` only to the dedicated container billing account `csc-aigw-shgw-demo1234`, enabling the API key required by the connected container.
+
+Do not delete `csc-aigw-shgw-demo1234` while `ca-content-safety` is running. The container must periodically reach that account for licensing and metering; deleting it causes Content Safety calls to time out and the demo to return HTTP `500`.
+
+Deploy the local container without changing APIM routing:
+
+```bash
+bash ./deploy.sh safety-container
+```
+
+The image exceeds the Container Apps Consumption image limit of 8 GB. The deployment therefore adds a D4 profile named `cs-d4` and assigns only `ca-content-safety` to it. The gateway and UI remain on Consumption. The container uses the current `text-analyze:latest` preview image and runs with 4 vCPU, 16 GiB, `CUDA_ENABLED=false`, internal-only ingress, and one replica.
+
+Validate the container before changing APIM:
+
+```bash
+bash ./validate.sh safety-container
+```
+
+After validation passes, deploy the local-only product policy with the internal `ca-content-safety` FQDN. The policy extracts the Responses API `input` and calls the local `/contentsafety/text:analyze` endpoint before the Foundry API policy runs.
+
+```bash
+bash ./deploy.sh safety-local
+bash ./validate.sh safety
+```
+
+The policy blocks Violence severity 1 or higher for a deterministic lab demonstration. Hate, Sexual, and SelfHarm remain at threshold 4. It uses the eight-level scale from 0 through 7. The isolated request is required because this Foundry API uses the `api-key` header for its APIM subscription; forwarding that unrelated key to Content Safety overrides bearer authentication and returns `401`.
+
+| Category | Example content blocked at threshold 4 |
+| --- | --- |
+| Violence | Threats, stated intent to kill, graphic violence, severe injury, or physical assault |
+| Hate | Abusive or dehumanizing attacks against protected identity groups |
+| Sexual | Explicit sexual content |
+| SelfHarm | Instructions or encouragement for suicide or self-injury |
+
+Run the end-to-end proof:
+
+```bash
+./validate.sh safety
+```
+
+The check sends one safe prompt and expects HTTP `200`, then sends a clearly graphic violent prompt and expects HTTP `403` with `ContentSafetyViolation`. The same blocked prompt entered at the public UI displays `Prompt blocked by Azure AI Content Safety.` Capture the applied result as `docs/images/ai-gateway-self-hosted-azure/06-content-safety-blocked.png`.
+
+Key changes require a fresh Container Apps revision. Set `ROTATE_CONTENT_SAFETY_KEY=true` only when rotation is required; normal reruns reuse the current key. Azure's container metering backend can take several minutes to recognize a newly regenerated key.
+
+Foundry policy changes can replace the project product policy; rerun the selected safety deployment after such a change.
+
 ## Foundry association checkpoint
 
 After the base deployment finishes:
@@ -136,6 +186,12 @@ Validation results:
 | Azure Monitor Requests split | `OpenAITokenLimitExceeded = 1` |
 | Final request after cleanup | HTTP `200` |
 | End-user UI model request | HTTP `200`, `UI_DEMO_OK` |
+| Content Safety safe prompt | HTTP `200`, model called |
+| Content Safety violent prompt | HTTP `403`, `ContentSafetyViolation`, model not called |
+| End-user UI violent prompt | HTTP `403`, `Prompt blocked by Azure AI Content Safety.` |
+| Local container readiness | HTTP `200`, valid metering key |
+| Local Hebrew classification | Violence severity `5` |
+| Live APIM safety endpoint | Internal `ca-content-safety` FQDN |
 
 Removing the test limit reproduced the preview empty-variable issue. The project product policy was restored to a base-only policy and verified to contain no `tokenlimit-*` variable before the final request.
 

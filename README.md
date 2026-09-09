@@ -1,6 +1,6 @@
 # Microsoft Foundry Networking — The Complete Guide
 
-> **Updated September 2026** — Covers Microsoft Foundry networking, private evaluation, and AI Gateway patterns, including classic APIM with a hybrid and multicloud self-hosted gateway for on-premises, AWS, GCP, edge, and other environments.
+> **Updated September 2026** — Covers Microsoft Foundry networking, private evaluation, AI Gateway patterns, and customer-hosted Content Safety, including classic APIM with a hybrid and multicloud self-hosted gateway for on-premises, AWS, GCP, edge, and other environments.
 
 [![Deploy To Azure](https://raw.githubusercontent.com/Azure/azure-quickstart-templates/master/1-CONTRIBUTION-GUIDE/images/deploytoazure.svg?sanitize=true)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Froie9876%2FAzure-AI-Foundry-Networking%2Frefs%2Fheads%2Fmain%2Fbicep%2Fazuredeploy.json)
 
@@ -81,6 +81,15 @@
   - [16.6 Monitoring and Logging](#166-monitoring-and-logging)
   - [16.7 Security and Production Considerations](#167-security-and-production-considerations)
   - [16.8 Validation Checklist](#168-validation-checklist)
+- [Part 17: Customer-Hosted Content Safety for the Self-Hosted AI Gateway](#part-17-customer-hosted-content-safety-for-the-self-hosted-ai-gateway)
+  - [17.1 Implemented Architecture](#171-implemented-architecture)
+  - [17.2 Request and Enforcement Flow](#172-request-and-enforcement-flow)
+  - [17.3 The Azure Billing Account Requirement](#173-the-azure-billing-account-requirement)
+  - [17.4 Where Policy Is Managed](#174-where-policy-is-managed)
+  - [17.5 Category Thresholds](#175-category-thresholds)
+  - [17.6 Deployment and Validation](#176-deployment-and-validation)
+  - [17.7 Monitoring and Troubleshooting](#177-monitoring-and-troubleshooting)
+  - [17.8 Security and Validation Checklist](#178-security-and-validation-checklist)
 
 ---
 
@@ -3328,6 +3337,296 @@ Application Insights integration is optional and is not required for the native
 - [Deploy self-hosted gateway to Docker](https://learn.microsoft.com/azure/api-management/how-to-deploy-self-hosted-gateway-docker)
 - [Configure self-hosted gateway cloud metrics and logs](https://learn.microsoft.com/azure/api-management/how-to-configure-cloud-metrics-logs)
 - [Configure APIM service update settings](https://learn.microsoft.com/azure/api-management/configure-service-update-settings)
+
+---
+
+## Part 17: Customer-Hosted Content Safety for the Self-Hosted AI Gateway
+
+Chapter 16 placed the APIM gateway data plane in a customer-selected environment.
+This chapter adds a second local runtime: the Azure AI Content Safety text-analysis
+container. APIM inspects each incoming prompt with that container before an allowed
+request is sent to the Microsoft Foundry model.
+
+This pattern is useful when the customer wants prompt classification to run on-premises,
+in another cloud, at an edge location, or beside a customer-hosted gateway. Azure still
+provides the APIM management plane and a Content Safety account for connected-container
+licensing and metering.
+
+### 17.1 Implemented Architecture
+
+![Self-hosted AI Gateway with customer-hosted Content Safety](docs/images/ai-gateway-self-hosted-content-safety.png)
+
+Editable source: [Customer-hosted Content Safety diagram](docs/ai-gateway-self-hosted-content-safety.drawio)
+
+The validated lab uses these components:
+
+| Component | Validated resource | Location and responsibility |
+|---|---|---|
+| Application and demo UI | `ca-shgw-demo` UI container | Sends OpenAI-compatible Responses API requests |
+| Self-hosted APIM gateway | `ca-shgw-demo` gateway container | Authenticates the caller, executes the product policy, blocks or forwards |
+| Content Safety runtime | `ca-content-safety` | Internal-only text-analysis container; classification runs here |
+| Container Apps environment | `cae-aigw-shgw-demo1234` | Shared customer-hosted network boundary for the gateway and safety container |
+| Dedicated workload profile | `cs-d4` | D4, 4 vCPU and 16 GiB; needed because the Content Safety image exceeds the Consumption image-size limit |
+| Container billing account | `csc-aigw-shgw-demo1234` | S0 licensing, key validation, model-key retrieval, and usage metering |
+| APIM management plane | `apim-aigw-shgw-demo1234` | Stores the API, generated product, subscription, and custom inbound policy |
+| Foundry model | `gpt-4.1-mini` | Processes only requests allowed by the local policy |
+
+The Content Safety Container App has **internal ingress only**. Clients cannot call it
+from the public internet. The self-hosted gateway reaches it by using the Container Apps
+environment-internal FQDN.
+
+### 17.2 Request and Enforcement Flow
+
+The current implementation inspects **incoming prompts**. It does not inspect model
+responses.
+
+1. The application sends an LLM request to the self-hosted APIM gateway.
+2. The APIM product policy preserves the original request body and extracts the Responses
+   API `input` value.
+3. `send-request` sends only that text to the internal Content Safety endpoint:
+   `/contentsafety/text:analyze?api-version=2024-09-01`.
+4. The local model returns category severities for Hate, Violence, Sexual, and Self-harm.
+5. APIM compares each result with its configured category threshold.
+6. If a threshold is met, APIM returns HTTP `403` with `ContentSafetyViolation`. The
+   Foundry model is not called.
+7. If no threshold is met, the existing Foundry-generated API policy forwards the
+   original request to the model.
+
+The response returned for a blocked prompt has this shape:
+
+```json
+{
+  "error": {
+    "code": "ContentSafetyViolation",
+    "message": "Prompt blocked by Azure AI Content Safety.",
+    "reason": "hate severity 6"
+  }
+}
+```
+
+The message and status are controlled by the APIM policy, not by the container. They can
+be customized without rebuilding the container.
+
+### 17.3 The Azure Billing Account Requirement
+
+Customer-hosted does not mean unlicensed or disconnected. The standard Content Safety
+container is a **connected Azure AI container**. It requires all three startup values:
+
+- `Eula=accept`
+- `Billing=https://<content-safety-account>.cognitiveservices.azure.com/`
+- `ApiKey=<content-safety-account-key>`
+
+The validated deployment uses `csc-aigw-shgw-demo1234` exclusively for this purpose. APIM
+does **not** send prompts to that Azure endpoint. Classification happens in
+`ca-content-safety`; the account validates the container license, supplies encrypted
+model material, and receives usage-meter records.
+
+The environment's management-group policy normally forces
+`disableLocalAuth=true` for Cognitive Services. Because the connected container requires
+an API key, this lab creates the billing account with:
+
+```bicep
+tags: {
+  SecurityControl: 'Ignore'
+}
+properties: {
+  disableLocalAuth: false
+}
+```
+
+Apply this exemption narrowly to the dedicated container billing account. Do not apply it
+to the resource group or subscription unless the security owner explicitly approves the
+broader exception.
+
+> **Do not delete the billing account while the container is running.** The container
+> periodically validates metering. Deleting the account removes its DNS endpoint; after
+> retry exhaustion the container stops serving analysis requests, APIM `send-request`
+> times out, and clients receive HTTP `500`. A soft-deleted account can be recovered only
+> during its retention window.
+
+Disconnected containers use a separate approval, commitment-plan, license-file, and
+usage-record workflow. They are not enabled by this connected-container deployment.
+
+### 17.4 Where Policy Is Managed
+
+There are four related management surfaces. They do not configure the same things.
+
+| Surface | What can be managed | What it does not manage |
+|---|---|---|
+| Foundry **Manage → AI Gateway** | Gateway association, project enablement, generated model token limits and quotas | Local Content Safety endpoint, category thresholds, custom 403 body |
+| APIM product **Policies** | Live XML policy, local endpoint, request extraction, thresholds, block response | Container image, CPU/memory, billing key |
+| Content Safety billing account | Keys, networking, pricing tier, tags, account monitoring | APIM thresholds; local container runtime configuration |
+| Container App | Image, secrets, revisions, D4 profile, ingress, health probes, logs | APIM policy logic |
+
+The live portal path for this lab is:
+
+1. Open `apim-aigw-shgw-demo1234`.
+2. Select **Products**.
+3. Open the generated project product beginning with
+   `aif-aigw-shgw-demo1234-proj-aigw-shgw-demo`.
+4. Select **Policies**.
+5. Edit and save the inbound policy.
+
+The self-hosted gateway automatically synchronizes a saved APIM policy. A container
+rebuild or restart is not normally required. Allow approximately 30–120 seconds, then
+test the gateway.
+
+For repeatability, the source of truth should remain
+[`deployment/ai-gateway-self-hosted/content-safety.bicep`](deployment/ai-gateway-self-hosted/content-safety.bicep).
+A later `safety-local` deployment overwrites manual portal edits with the Bicep version.
+Foundry operations may also regenerate project product settings, so revalidate the custom
+policy after changing AI Gateway settings in Foundry.
+
+### 17.5 Category Thresholds
+
+The Bicep module exposes one setting per category near the top of the file:
+
+```bicep
+param hateThreshold int = 1
+param violenceThreshold int = 1
+param sexualThreshold int = 1
+param selfHarmThreshold int = 1
+```
+
+The local container supports `FourSeverityLevels`, returning `0`, `2`, `4`, or `6`.
+APIM blocks when `severity >= threshold`.
+
+| Threshold | Effective behavior |
+|---:|---|
+| `1` | Most restrictive practical setting: allow `0`; block `2`, `4`, and `6` |
+| `2` | Same effective behavior as `1` for four-level output |
+| `4` | Allow `0` and `2`; block `4` and `6` |
+| `6` | Block only severity `6` |
+| `7` | Disable blocking for that category because the container never returns `7` |
+
+For example, the validated Hebrew Hate test was classified as Hate severity `6`. A Hate
+threshold of `4` still blocks it because $6 \ge 4$. Set the threshold to `7` only when the
+intent is to stop enforcing that category.
+
+This container detects harm categories and optional local blocklist terms. It does not
+detect PII. Add a separate Azure AI Language PII container or service when names, email
+addresses, phone numbers, identity numbers, payment data, or other personal information
+must be detected or redacted. Prompt Shields and image safety also use separate Content
+Safety capabilities or containers.
+
+### 17.6 Deployment and Validation
+
+The implementation is under
+[`deployment/ai-gateway-self-hosted/`](deployment/ai-gateway-self-hosted/).
+
+Deploy or refresh the billing account, D4 profile, and internal container without changing
+APIM routing:
+
+```bash
+bash deployment/ai-gateway-self-hosted/deploy.sh safety-container
+```
+
+Validate the local runtime before directing production-like traffic to it:
+
+```bash
+bash deployment/ai-gateway-self-hosted/validate.sh safety-container
+```
+
+Apply the APIM product policy that targets the healthy internal container:
+
+```bash
+bash deployment/ai-gateway-self-hosted/deploy.sh safety-local
+```
+
+Run the end-to-end allowed/blocked proof:
+
+```bash
+bash deployment/ai-gateway-self-hosted/validate.sh safety
+```
+
+The validated sequence returned:
+
+| Test | Expected result |
+|---|---|
+| Internal `/ready` | HTTP `200`; billing key valid |
+| Safe local classification | All categories severity `0` |
+| Hebrew violence prompt | Violence severity `5` from the local container |
+| Safe public LLM request | HTTP `200`; model called |
+| Harmful public LLM request | HTTP `403`; model not called |
+
+The demo endpoint is:
+
+```text
+https://ca-shgw-demo.environment-domain.swedencentral.azurecontainerapps.io/
+```
+
+### 17.7 Monitoring and Troubleshooting
+
+#### Container logs
+
+Open **Container Apps → `ca-content-safety` → Log stream** or query its shared Log
+Analytics workspace. Healthy startup includes:
+
+```text
+ApimMetering:Send ... True 200
+Model decrypted successfully
+CUDA Enabled: false
+Text Analyze Model initialized successfully
+listening on: http://[::]:5000
+```
+
+Each classification writes `TextAnalyze:Tokenize`, `TextAnalyze:AnalyzeByModel`, and
+`TextAnalyze:Total` timing records. In the validated CPU lab, the final requests took
+approximately 265–317 ms of model time.
+
+#### Common failures
+
+| Symptom | Cause | Resolution |
+|---|---|---|
+| Image pull reports `no space left on device` | Content Safety image exceeds the Consumption profile's 8 GB image limit | Run the app on the D4 `cs-d4` profile |
+| `/ready` reports invalid API key | Local auth was enabled after account creation or the key was rotated | Regenerate Key1 and deploy a fresh Container Apps revision |
+| Billing endpoint returns `403` | Wrong account/key pair, local auth disabled, or account not enabled from creation | Verify `SecurityControl=Ignore`, `disableLocalAuth=false`, and use the dedicated `csc-*` account |
+| Billing DNS lookup fails | The billing account was deleted | Recover the soft-deleted account immediately and restart the active revision |
+| APIM returns HTTP `500` after 30 seconds | `send-request` timed out because Content Safety was not serving | Check `/ready`, billing logs, active revision, and internal DNS before changing policy |
+| Safe and harmful prompts both return `500` | Runtime outage, not threshold behavior | Restore container health first; thresholds are evaluated only after HTTP `200` analysis |
+| Portal policy change has no effect | Gateway has not synchronized or a different product was edited | Confirm the generated product, save the policy, wait for sync, and inspect gateway logs |
+
+The billing account may be recovered during soft-delete retention:
+
+```bash
+az cognitiveservices account recover \
+  --location swedencentral \
+  --resource-group rg-aigw-shgw-demo \
+  --name csc-aigw-shgw-demo1234
+```
+
+### 17.8 Security and Validation Checklist
+
+- [ ] The Content Safety billing account is dedicated to the container and has the narrow
+  `SecurityControl=Ignore` exception.
+- [ ] Local authentication is enabled only where the connected-container requirement
+  justifies it.
+- [ ] The API key is stored as a Container Apps secret and is absent from source control,
+  command output, and application logs.
+- [ ] Key rotation creates a fresh container revision and validates `/ready` before old
+  keys or revisions are removed.
+- [ ] `ca-content-safety` uses internal-only ingress.
+- [ ] The self-hosted gateway and Content Safety container share a trusted customer-hosted
+  network boundary.
+- [ ] The Content Safety app is assigned to D4 or another profile that supports its image
+  and memory requirements.
+- [ ] Outbound HTTPS to the billing account remains available.
+- [ ] APIM policy thresholds are reviewed per category and are not confused with severity
+  values returned by the model.
+- [ ] Safe requests return HTTP `200`; blocked requests return HTTP `403`; blocked request
+  logs contain no Foundry backend call.
+- [ ] The container billing account is protected from accidental deletion.
+- [ ] PII, Prompt Shields, image analysis, and response moderation are treated as separate
+  requirements rather than assumed to be provided by this text-analysis policy.
+
+#### References
+
+- [Content Safety containers overview](https://learn.microsoft.com/azure/ai-services/content-safety/how-to/containers/container-overview)
+- [Install and run Content Safety containers](https://learn.microsoft.com/azure/ai-services/content-safety/how-to/containers/install-run-container)
+- [Analyze text with the Content Safety container](https://learn.microsoft.com/azure/ai-services/content-safety/how-to/containers/text-container)
+- [APIM `send-request` policy](https://learn.microsoft.com/azure/api-management/send-request-policy)
+- [Azure Container Apps container limitations](https://learn.microsoft.com/azure/container-apps/containers#limitations)
+- [Azure Container Apps workload profiles](https://learn.microsoft.com/azure/container-apps/workload-profiles-overview)
 
 ---
 
