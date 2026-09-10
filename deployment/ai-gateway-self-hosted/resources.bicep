@@ -26,11 +26,18 @@ param registryPassword string
 @secure()
 param uiApiKey string
 
+@secure()
+param easyAuthClientSecret string
+
+@secure()
+param easyAuthTokenStoreSecret string
+
 var aiAccountName = 'aif-aigw-shgw-${suffix}'
 var aiProjectName = 'proj-aigw-shgw-demo'
 var apimName = 'apim-aigw-shgw-${suffix}'
 var gatewayName = 'shgw-demo'
 var logAnalyticsName = 'law-aigw-shgw-${suffix}'
+var applicationInsightsName = 'appi-aigw-shgw-${suffix}'
 var containerEnvironmentName = 'cae-aigw-shgw-${suffix}'
 var containerAppName = 'ca-shgw-demo'
 var registryName = 'acraigwshgw${suffix}'
@@ -38,6 +45,10 @@ var modelDeploymentName = 'gpt-4.1-mini'
 var cognitiveServicesUserRoleId = subscriptionResourceId(
   'Microsoft.Authorization/roleDefinitions',
   'a97b65f3-24c7-4388-baec-2e87135dc908'
+)
+var logAnalyticsReaderRoleId = subscriptionResourceId(
+  'Microsoft.Authorization/roleDefinitions',
+  '73c42c96-874c-492b-b04d-ab87d138a893'
 )
 
 resource aiAccount 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' = {
@@ -145,6 +156,47 @@ resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
   }
 }
 
+resource applicationInsights 'Microsoft.Insights/components@2020-02-02' = {
+  name: applicationInsightsName
+  location: location
+  kind: 'web'
+  properties: {
+    Application_Type: 'web'
+    DisableLocalAuth: false
+    IngestionMode: 'LogAnalytics'
+    RetentionInDays: 30
+    SamplingPercentage: 100
+    WorkspaceResourceId: logAnalytics.id
+    publicNetworkAccessForIngestion: 'Enabled'
+    publicNetworkAccessForQuery: 'Enabled'
+  }
+}
+
+resource applicationInsightsConnection 'Microsoft.CognitiveServices/accounts/projects/connections@2025-06-01' = {
+  parent: aiProject
+  name: 'appinsights-demo'
+  properties: {
+    #disable-next-line BCP036
+    authType: 'ProjectManagedIdentity'
+    category: 'AppInsights'
+    isSharedToAll: true
+    metadata: {
+      ApplicationInsightsConnectionString: applicationInsights.properties.ConnectionString
+    }
+    target: applicationInsights.id
+  }
+}
+
+resource projectTraceReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(logAnalytics.id, aiProject.id, logAnalyticsReaderRoleId)
+  scope: logAnalytics
+  properties: {
+    principalId: aiProject.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: logAnalyticsReaderRoleId
+  }
+}
+
 resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
   name: registryName
   location: location
@@ -161,6 +213,18 @@ resource containerEnvironment 'Microsoft.App/managedEnvironments@2024-03-01' = {
   name: containerEnvironmentName
   location: location
   properties: {
+    workloadProfiles: [
+      {
+        name: 'Consumption'
+        workloadProfileType: 'Consumption'
+      }
+      {
+        name: 'cs-d4'
+        workloadProfileType: 'D4'
+        minimumCount: 0
+        maximumCount: 1
+      }
+    ]
     appLogsConfiguration: {
       destination: 'log-analytics'
       logAnalyticsConfiguration: {
@@ -204,6 +268,18 @@ resource gatewayContainer 'Microsoft.App/containerApps@2024-03-01' = if (deployG
         {
           name: 'registry-password'
           value: registryPassword
+        }
+        {
+          name: 'app-insights-connection-string'
+          value: applicationInsights.properties.ConnectionString
+        }
+        {
+          name: 'microsoft-provider-authentication-secret'
+          value: easyAuthClientSecret
+        }
+        {
+          name: 'blob-storage-token-store-sasurl-secret'
+          value: easyAuthTokenStoreSecret
         }
       ] : [])
     }
@@ -286,6 +362,18 @@ resource gatewayContainer 'Microsoft.App/containerApps@2024-03-01' = if (deployG
               name: 'API_KEY'
               secretRef: 'ui-api-key'
             }
+            {
+              name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
+              secretRef: 'app-insights-connection-string'
+            }
+            {
+              name: 'OTEL_SERVICE_NAME'
+              value: 'ai-gateway-external-app'
+            }
+            {
+              name: 'OTEL_AGENT_ID'
+              value: 'ai-gateway-external-agent'
+            }
           ]
           resources: {
             cpu: json('0.25')
@@ -331,3 +419,4 @@ output registryName string = registry.name
 output containerAppName string = containerAppName
 output containerAppFqdn string = gatewayContainer.?properties.configuration.ingress.fqdn ?? ''
 output modelDeploymentName string = modelDeployment.name
+output applicationInsightsName string = applicationInsights.name

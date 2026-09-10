@@ -44,6 +44,14 @@ param registryPassword string = ''
 @description('APIM project subscription key used only by the server-side UI container.')
 param uiApiKey string = ''
 
+@secure()
+@description('Existing Container Apps Easy Auth client secret, preserved during UI redeployment.')
+param easyAuthClientSecret string = ''
+
+@secure()
+@description('Existing Container Apps Easy Auth Blob token-store SAS URL, preserved during UI redeployment.')
+param easyAuthTokenStoreSecret string = ''
+
 resource resourceGroup 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   name: resourceGroupName
   location: location
@@ -69,6 +77,8 @@ module demoResources 'resources.bicep' = {
     registryUsername: registryUsername
     registryPassword: registryPassword
     uiApiKey: uiApiKey
+    easyAuthClientSecret: easyAuthClientSecret
+    easyAuthTokenStoreSecret: easyAuthTokenStoreSecret
   }
 }
 

@@ -68,7 +68,7 @@
         <mxCell id="apim-icon" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/integration/API_Management_Services.svg;" parent="1" vertex="1">
           <mxGeometry x="1080" y="220" width="80" height="80" as="geometry" />
         </mxCell>
-        <mxCell id="apim-label" value="&lt;b&gt;Azure API Management&lt;/b&gt;&lt;br&gt;APIs, products, policies,&lt;br&gt;gateway configuration" style="text;html=1;fontSize=15;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#1e3a8a;" parent="1" vertex="1">
+        <mxCell id="apim-label" value="&lt;b&gt;Azure AI Gateway&lt;/b&gt;&lt;br&gt;APIs, products, policies,&lt;br&gt;gateway configuration" style="text;html=1;fontSize=15;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#1e3a8a;" parent="1" vertex="1">
           <mxGeometry x="1030" y="315" width="180" height="75" as="geometry" />
         </mxCell>
         <mxCell id="billing-icon" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/ai_machine_learning/Cognitive_Services.svg;" parent="1" vertex="1">
@@ -93,8 +93,17 @@
         <mxCell id="model-box" value="&lt;b&gt;LLM deployment&lt;/b&gt;&lt;br&gt;Receives only requests allowed by the local Content Safety policy" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#f97316;strokeWidth=2;fontSize=15;align=center;verticalAlign=middle;fontColor=#7c2d12;arcSize=8;" parent="1" vertex="1">
           <mxGeometry x="1520" y="475" width="285" height="115" as="geometry" />
         </mxCell>
+        <mxCell id="external-agent-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#f97316;strokeWidth=2;fontSize=15;align=center;verticalAlign=middle;fontColor=#7c2d12;arcSize=8;" parent="1" vertex="1">
+          <mxGeometry x="1520" y="620" width="285" height="105" as="geometry" />
+        </mxCell>
+        <mxCell id="external-agent-icon" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/ai_machine_learning/AI_Studio.svg;" parent="1" vertex="1">
+          <mxGeometry x="1540" y="640" width="62" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="external-agent-label" value="&lt;b&gt;External agent registration&lt;/b&gt;&lt;br&gt;OpenTelemetry traces&lt;br&gt;Monitoring and evaluation" style="text;html=1;fontSize=14;align=left;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#7c2d12;" parent="1" vertex="1">
+          <mxGeometry x="1615" y="635" width="175" height="75" as="geometry" />
+        </mxCell>
         <mxCell id="model-note" value="The model remains Azure-hosted. Content Safety inference and policy enforcement run in the customer environment." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffedd5;strokeColor=#fdba74;fontSize=13;align=center;verticalAlign=middle;fontColor=#7c2d12;arcSize=8;" parent="1" vertex="1">
-          <mxGeometry x="1535" y="700" width="255" height="72" as="geometry" />
+          <mxGeometry x="1535" y="755" width="255" height="65" as="geometry" />
         </mxCell>
 
         <mxCell id="flow-app-gateway" value="1. LLM request&lt;br&gt;HTTPS:443" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#0078D4;strokeWidth=3;endArrow=block;endFill=1;fontColor=#005a9e;fontSize=12;fontStyle=1;labelBackgroundColor=#ffffff;" parent="1" source="app-box" target="gateway-box" edge="1">
@@ -129,8 +138,16 @@
             </Array>
           </mxGeometry>
         </mxCell>
+        <mxCell id="flow-app-external-agent" value="5. OpenTelemetry traces&lt;br&gt;Outbound HTTPS:443" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#00897B;strokeWidth=2;dashed=1;dashPattern=8 8;endArrow=block;endFill=1;fontColor=#00695c;fontSize=11;fontStyle=1;labelBackgroundColor=#ffffff;" parent="1" source="app-box" target="external-agent-box" edge="1">
+          <mxGeometry x="0" y="-18" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="320" y="610" />
+              <mxPoint x="1440" y="610" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
 
-        <mxCell id="legend" value="&lt;b&gt;Legend&lt;/b&gt;&amp;nbsp;&amp;nbsp; Blue: LLM data path &amp;nbsp;&amp;nbsp; Purple: local safety inspection &amp;nbsp;&amp;nbsp; Amber dashed: management / metering &amp;nbsp;&amp;nbsp; Red: blocked locally" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d1d5db;fontSize=13;align=center;verticalAlign=middle;fontColor=#374151;arcSize=8;" parent="1" vertex="1">
+        <mxCell id="legend" value="&lt;b&gt;Legend&lt;/b&gt;&amp;nbsp;&amp;nbsp; Blue: LLM data path &amp;nbsp;&amp;nbsp; Purple: local safety inspection &amp;nbsp;&amp;nbsp; Teal dashed: OpenTelemetry &amp;nbsp;&amp;nbsp; Amber dashed: management / metering &amp;nbsp;&amp;nbsp; Red: blocked locally" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d1d5db;fontSize=13;align=center;verticalAlign=middle;fontColor=#374151;arcSize=8;" parent="1" vertex="1">
           <mxGeometry x="275" y="910" width="1350" height="48" as="geometry" />
         </mxCell>
         <mxCell id="boundary-note" value="&lt;b&gt;Boundary rule:&lt;/b&gt; Prompt classification happens inside the customer-hosted environment. The Azure billing account is required to license and meter the connected container, but it is not the inference endpoint used by APIM." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff9cc;strokeColor=#d6b656;fontSize=14;align=center;verticalAlign=middle;fontColor=#6b4f00;arcSize=8;" parent="1" vertex="1">

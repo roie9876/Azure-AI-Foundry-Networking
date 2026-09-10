@@ -7,6 +7,15 @@ param foundryProductId string
 @description('Internal endpoint of the customer-hosted Content Safety container.')
 param contentSafetyEndpoint string
 
+@description('Require Microsoft Entra authentication and apply role-specific controls.')
+param enableEntraAuth bool = false
+
+@description('Microsoft Entra tenant that issues demo user tokens.')
+param entraTenantId string = ''
+
+@description('Application client ID expected in the token audience.')
+param entraClientId string = ''
+
 @description('Block Hate at this severity or higher.')
 @minValue(1)
 @maxValue(7)
@@ -27,6 +36,33 @@ param sexualThreshold int = 1
 @maxValue(7)
 param selfHarmThreshold int = 1
 
+var entraPolicy = enableEntraAuth ? replace(replace('''
+          <validate-azure-ad-token tenant-id="__ENTRA_TENANT_ID__" output-token-variable-name="userJwt" failed-validation-httpcode="401" failed-validation-error-message="Microsoft Entra authentication is required.">
+            <audiences>
+              <audience>__ENTRA_CLIENT_ID__</audience>
+            </audiences>
+            <required-claims>
+              <claim name="roles" match="any">
+                <value>AI.Limited</value>
+                <value>AI.Unlimited</value>
+              </claim>
+            </required-claims>
+          </validate-azure-ad-token>
+          <set-variable name="isLimitedUser" value="@(((Jwt)context.Variables[&quot;userJwt&quot;]).Claims[&quot;roles&quot;].Contains(&quot;AI.Limited&quot;))" />
+    ''', '__ENTRA_TENANT_ID__', entraTenantId), '__ENTRA_CLIENT_ID__', entraClientId) : '''
+          <set-variable name="isLimitedUser" value="@(false)" />
+    '''
+
+var tokenLimitPolicy = enableEntraAuth ? '''
+          <choose>
+            <when condition="@((bool)context.Variables[&quot;isLimitedUser&quot;])">
+              <llm-token-limit counter-key="@(((Jwt)context.Variables[&quot;userJwt&quot;]).Claims[&quot;oid&quot;].First())" tokens-per-minute="1" estimate-prompt-tokens="true" />
+            </when>
+          </choose>
+    ''' : ''
+
+var hateThresholdExpression = enableEntraAuth ? '((bool)context.Variables[&quot;isLimitedUser&quot;] ? 1 : 7)' : string(hateThreshold)
+
 resource apim 'Microsoft.ApiManagement/service@2024-05-01' existing = {
   name: apimName
 }
@@ -40,11 +76,13 @@ resource contentSafetyPolicy 'Microsoft.ApiManagement/service/products/policies@
   parent: foundryProduct
   name: 'policy'
   properties: {
-    format: 'rawxml'
-    value: replace(replace(replace(replace(replace('''
+    format: 'xml'
+    value: replace(replace(replace(replace(replace(replace(replace('''
       <policies>
         <inbound>
           <base />
+__ENTRA_POLICY__
+__TOKEN_LIMIT_POLICY__
           <set-variable name="contentSafetyText" value="@{
             var body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
             var input = body[&quot;input&quot;];
@@ -78,7 +116,7 @@ resource contentSafetyPolicy 'Microsoft.ApiManagement/service/products/policies@
                   var categoryName = (string)category[&quot;category&quot;];
                   var severity = (int?)category[&quot;severity&quot;] ?? 0;
                   var threshold =
-                    categoryName.Equals(&quot;hate&quot;, StringComparison.OrdinalIgnoreCase) ? __HATE_THRESHOLD__ :
+                    categoryName.Equals(&quot;hate&quot;, StringComparison.OrdinalIgnoreCase) ? __HATE_THRESHOLD_EXPRESSION__ :
                     categoryName.Equals(&quot;violence&quot;, StringComparison.OrdinalIgnoreCase) ? __VIOLENCE_THRESHOLD__ :
                     categoryName.Equals(&quot;sexual&quot;, StringComparison.OrdinalIgnoreCase) ? __SEXUAL_THRESHOLD__ :
                     categoryName.Equals(&quot;selfHarm&quot;, StringComparison.OrdinalIgnoreCase) ? __SELF_HARM_THRESHOLD__ :
@@ -122,6 +160,6 @@ resource contentSafetyPolicy 'Microsoft.ApiManagement/service/products/policies@
           <base />
         </on-error>
       </policies>
-    ''', '__CONTENT_SAFETY_ENDPOINT__', contentSafetyEndpoint), '__HATE_THRESHOLD__', string(hateThreshold)), '__VIOLENCE_THRESHOLD__', string(violenceThreshold)), '__SEXUAL_THRESHOLD__', string(sexualThreshold)), '__SELF_HARM_THRESHOLD__', string(selfHarmThreshold))
+    ''', '__CONTENT_SAFETY_ENDPOINT__', contentSafetyEndpoint), '__ENTRA_POLICY__', entraPolicy), '__TOKEN_LIMIT_POLICY__', tokenLimitPolicy), '__HATE_THRESHOLD_EXPRESSION__', hateThresholdExpression), '__VIOLENCE_THRESHOLD__', string(violenceThreshold)), '__SEXUAL_THRESHOLD__', string(sexualThreshold)), '__SELF_HARM_THRESHOLD__', string(selfHarmThreshold))
   }
 }

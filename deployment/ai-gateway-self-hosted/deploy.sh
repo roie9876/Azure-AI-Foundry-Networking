@@ -25,7 +25,16 @@ UI_IMAGE_REPOSITORY="aigw-demo-ui"
 CONTENT_SAFETY_CONTAINER_ACCOUNT_NAME="csc-aigw-shgw-${SUFFIX}"
 CONTENT_SAFETY_APP_NAME="ca-content-safety"
 CONTENT_SAFETY_PROFILE_NAME="cs-d4"
+CONTENT_SAFETY_HATE_THRESHOLD="${CONTENT_SAFETY_HATE_THRESHOLD:-1}"
+CONTENT_SAFETY_VIOLENCE_THRESHOLD="${CONTENT_SAFETY_VIOLENCE_THRESHOLD:-1}"
+CONTENT_SAFETY_SEXUAL_THRESHOLD="${CONTENT_SAFETY_SEXUAL_THRESHOLD:-1}"
+CONTENT_SAFETY_SELF_HARM_THRESHOLD="${CONTENT_SAFETY_SELF_HARM_THRESHOLD:-1}"
+ENABLE_ENTRA_AUTH="${ENABLE_ENTRA_AUTH:-false}"
+ENTRA_TENANT_ID="${ENTRA_TENANT_ID:-}"
+ENTRA_CLIENT_ID="${ENTRA_CLIENT_ID:-}"
 CONTAINER_ENVIRONMENT_NAME="cae-aigw-shgw-${SUFFIX}"
+TOKEN_STORE_ACCOUNT_NAME="staigwshgw${SUFFIX}"
+TOKEN_STORE_CONTAINER_NAME="auth-tokens"
 MODE="${1:-all}"
 
 case "$MODE" in
@@ -70,6 +79,8 @@ deploy_gateway_container() {
   local deploy_ui="${1:-false}"
   local gateway_url token_expiry gateway_token gateway_auth
   local ui_image='' registry_server='' registry_username='' registry_password='' ui_api_key=''
+  local easy_auth_client_secret='' easy_auth_token_store_secret=''
+  local token_store_sas='' token_store_url='' sas_expiry=''
   gateway_url="https://management.azure.com/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${RESOURCE_GROUP}/providers/Microsoft.ApiManagement/service/${APIM_NAME}/gateways/${GATEWAY_NAME}"
   token_expiry="$(date -u -v+7d '+%Y-%m-%dT%H:%M:%SZ')"
 
@@ -102,6 +113,21 @@ deploy_gateway_container() {
     ui_api_key="$(az rest --method post \
       --url "https://management.azure.com/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${RESOURCE_GROUP}/providers/Microsoft.ApiManagement/service/${APIM_NAME}/subscriptions/${APIM_SUBSCRIPTION_ID}/listSecrets?api-version=2024-05-01" \
       --query primaryKey --output tsv)"
+    if [[ "$ENABLE_ENTRA_AUTH" == 'true' ]]; then
+      : "${ENTRA_CLIENT_ID:?Set ENTRA_CLIENT_ID in $ENV_FILE for authenticated UI deployment}"
+      easy_auth_client_secret="$(az ad app credential reset \
+        --id "$ENTRA_CLIENT_ID" --append \
+        --display-name "Easy Auth $(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+        --years 1 --query password --output tsv)"
+      sas_expiry="$(date -u -v+6d '+%Y-%m-%dT%H:%MZ')"
+      token_store_sas="$(az storage container generate-sas \
+        --name "$TOKEN_STORE_CONTAINER_NAME" --account-name "$TOKEN_STORE_ACCOUNT_NAME" \
+        --auth-mode login --as-user --permissions racwdl --https-only \
+        --expiry "$sas_expiry" --output tsv)"
+      token_store_url="https://${TOKEN_STORE_ACCOUNT_NAME}.blob.core.windows.net/${TOKEN_STORE_CONTAINER_NAME}?${token_store_sas}"
+      easy_auth_token_store_secret="$token_store_url"
+      unset token_store_sas token_store_url
+    fi
   fi
 
   echo "[INFO] Generating a seven-day self-hosted gateway bootstrap token in memory"
@@ -135,9 +161,11 @@ deploy_gateway_container() {
       registryUsername="$registry_username" \
       registryPassword="$registry_password" \
       uiApiKey="$ui_api_key" \
+      easyAuthClientSecret="$easy_auth_client_secret" \
+      easyAuthTokenStoreSecret="$easy_auth_token_store_secret" \
     --output none
 
-  unset gateway_auth gateway_token registry_password ui_api_key
+  unset gateway_auth gateway_token registry_password ui_api_key easy_auth_client_secret easy_auth_token_store_secret
   local fqdn
   fqdn="$(az containerapp show --name ca-shgw-demo --resource-group "$RESOURCE_GROUP" --query properties.configuration.ingress.fqdn -o tsv)"
   echo "[OK] Gateway endpoint: https://${fqdn}"
@@ -240,11 +268,16 @@ deploy_content_safety_container() {
 
 use_content_safety_container() {
   : "${APIM_SUBSCRIPTION_ID:?Set APIM_SUBSCRIPTION_ID in $ENV_FILE after Foundry association}"
-  local subscription_scope foundry_product_id safety_fqdn latest_ready_revision
+  if [[ "$ENABLE_ENTRA_AUTH" == 'true' ]]; then
+    : "${ENTRA_TENANT_ID:?Set ENTRA_TENANT_ID in $ENV_FILE}"
+    : "${ENTRA_CLIENT_ID:?Set ENTRA_CLIENT_ID in $ENV_FILE}"
+  fi
+  local subscription_scope foundry_product_id safety_fqdn latest_ready_revision ready_replica_count
   latest_ready_revision="$(az containerapp show --name "$CONTENT_SAFETY_APP_NAME" --resource-group "$RESOURCE_GROUP" --query properties.latestReadyRevisionName --output tsv)"
   [[ -n "$latest_ready_revision" ]] || { echo '[ERROR] Content Safety container has no ready revision' >&2; exit 1; }
-  [[ "$(az containerapp revision show --name "$CONTENT_SAFETY_APP_NAME" --resource-group "$RESOURCE_GROUP" --revision "$latest_ready_revision" --query properties.healthState --output tsv)" == 'Healthy' ]] || {
-    echo "[ERROR] Content Safety revision $latest_ready_revision is not healthy" >&2
+  ready_replica_count="$(az containerapp replica list --name "$CONTENT_SAFETY_APP_NAME" --resource-group "$RESOURCE_GROUP" --revision "$latest_ready_revision" --query "[?properties.runningState=='Running'].properties.containers[] | [?ready == \`true\`] | length(@)" --output tsv)"
+  [[ "$ready_replica_count" -gt 0 ]] || {
+    echo "[ERROR] Content Safety revision $latest_ready_revision has no running, ready replica" >&2
     exit 1
   }
 
@@ -264,6 +297,13 @@ use_content_safety_container() {
       apimName="$APIM_NAME" \
       foundryProductId="$foundry_product_id" \
       contentSafetyEndpoint="https://${safety_fqdn}" \
+      enableEntraAuth="$ENABLE_ENTRA_AUTH" \
+      entraTenantId="$ENTRA_TENANT_ID" \
+      entraClientId="$ENTRA_CLIENT_ID" \
+      hateThreshold="$CONTENT_SAFETY_HATE_THRESHOLD" \
+      violenceThreshold="$CONTENT_SAFETY_VIOLENCE_THRESHOLD" \
+      sexualThreshold="$CONTENT_SAFETY_SEXUAL_THRESHOLD" \
+      selfHarmThreshold="$CONTENT_SAFETY_SELF_HARM_THRESHOLD" \
     --output none
   echo "[OK] APIM now uses the customer-hosted Content Safety container."
 }

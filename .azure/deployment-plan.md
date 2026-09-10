@@ -26,6 +26,13 @@ Deployed and verified on 2026-09-09 with APIM using the customer-hosted Content 
 - Apply the management-group policy exemption tag `SecurityControl=Ignore` to only the dedicated Content Safety account, enable local authentication, and use its key only as the connected container's metering credential.
 - Run the Content Safety image as a CPU lab Container App in the existing environment, then route APIM inspection to that internal endpoint only after it is healthy.
 - Add one `D4` workload profile named `cs-d4` with zero minimum and one maximum node because the Microsoft image exceeds the Consumption profile's 8 GB image limit. Assign only `ca-content-safety` to this profile.
+- Require Microsoft Entra sign-in before users can access the demo UI.
+- Assign `AI.Limited` to one Entra security group and enforce Hate threshold 1 plus a per-user 1 TPM limit.
+- Assign `AI.Unlimited` to a second Entra security group and enforce Hate threshold 7 with no LLM token limit.
+- Create one disposable demo user in each group. Store generated one-time passwords only in the local macOS Keychain and require password change at first sign-in.
+- Register the UI as an external traced application by linking workspace-based Application Insights to the Foundry project.
+- Register `ai-gateway-external-agent` in Foundry with the same `gen_ai.agent.id` used by the Node OpenTelemetry spans.
+- Capture each authenticated model interaction as OpenTelemetry, including the Entra object ID/name, policy tier, conversation ID, prompt, response or block reason, model, token usage, and status.
 
 ## Discovery Findings
 
@@ -51,6 +58,13 @@ APIM self-hosted gateway (one replica)
 	| generated AI Gateway API and policies
 	v
 Microsoft Foundry project / GPT-4.1-mini deployment
+
+The Node UI exports the complete authenticated interaction as OpenTelemetry:
+
+Node UI -> workspace-based Application Insights -> Log Analytics
+											|
+											v
+							  Foundry project Tracing tab
 
 The Content Safety extension adds this synchronous inbound path before the
 generated AI Gateway API policy forwards an allowed request to the model:
@@ -91,12 +105,15 @@ Names with `<suffix>` receive one generated lowercase suffix during deployment a
 | API Management | `apim-aigw-shgw-<suffix>` | Classic Developer, system-assigned identity, AI Gateway Early channel |
 | Self-hosted gateway | `shgw-demo` | Registered in APIM and assigned the generated API |
 | Log Analytics workspace | `law-aigw-shgw-<suffix>` | Container stdout/stderr and operational diagnostics |
+| Application Insights | `appi-aigw-shgw-<suffix>` | External application OpenTelemetry and Foundry trace source |
 | Container registry | `acraigwshgw<suffix>` | Basic private registry for the end-user UI image |
 | Container Apps environment | `cae-aigw-shgw-<suffix>` | Consumption workload profile |
 | Container app | `ca-shgw-demo` | Public UI on port 3000 plus local gateway sidecar on port 8080 |
 | Content Safety billing account | `csc-aigw-shgw-<suffix>` | S0 account used only for connected-container licensing and metering |
 
 No VNet, private endpoint, Key Vault, storage account, or custom domain is required. A Basic ACR stores the private end-user UI image.
+
+The demo intentionally records full prompt and response text. This data can contain personal, confidential, or regulated content and is available to principals with trace/log access. Do not use this capture mode for production traffic; disable message-content attributes or add redaction and retention controls first.
 
 The preview container requires an API key for metering, but this tenant enforces `disableLocalAuth=true`. The selected managed endpoint uses the built-in `llm-content-safety` APIM policy and keyless managed-identity authentication instead.
 
@@ -177,8 +194,17 @@ Post-deployment proof:
 7. Send a request that exceeds the configured token limit and receive HTTP 429 from the self-hosted gateway.
 8. Confirm native Azure Monitor metrics record the token-limit rejection.
 9. Capture required portal screenshots and add them to the runbook.
+10. Confirm the `AppInsights` project connection targets the new component, generate one authenticated request, and locate its conversation ID and end-user identity in Foundry **Tracing**.
 
 ## Section 7: Validation Proof
+
+Entra role-policy validation date: 2026-09-10.
+
+- The authenticated Node proxy passes syntax validation and forwards only the Easy Auth-provided ID token to APIM; the APIM subscription key remains server-side.
+- The role-aware APIM policy compiles locally and passes ARM validation against the existing product with Entra authentication enabled.
+- Container Apps Easy Auth is configured only after the authenticated UI revision is deployed; the APIM role policy is enabled last to avoid partial lockout.
+- Entra app roles are assigned to groups rather than embedding tenant-specific group IDs in the APIM policy.
+- The local Docker build reached Docker Hub unsuccessfully due to a network timeout; the existing Azure Container Registry build remains the deployment validation path.
 
 Content Safety extension validation date: 2026-09-09.
 

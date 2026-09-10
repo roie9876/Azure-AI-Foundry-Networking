@@ -98,6 +98,18 @@
       font-size: 18px;
       line-height: 1.5;
     }
+    .identity {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 18px;
+      color: var(--cp-text-muted);
+      font-size: 14px;
+    }
+    .identity strong { color: var(--cp-text); }
+    .identity a { color: var(--cp-link); font-weight: 650; text-decoration: none; }
+    .identity a:hover { text-decoration: underline; }
     .panel {
       padding: 24px;
       border: 1px solid var(--cp-border);
@@ -156,6 +168,10 @@
     <div class="eyebrow">Self-hosted gateway</div>
     <h1>Ask the model</h1>
     <p class="intro">Send a prompt through the Azure-hosted APIM gateway and see the model response.</p>
+    <div class="identity">
+      <span><strong id="user-name">Signed in</strong> · <span id="user-tier">Loading policy tier</span></span>
+      <a href="/.auth/logout?post_logout_redirect_uri=/">Sign out</a>
+    </div>
     <section class="panel">
       <form id="demo-form">
         <label for="prompt">Prompt</label>
@@ -175,6 +191,18 @@
     const result = document.getElementById("result");
     const status = document.getElementById("status");
     const answer = document.getElementById("answer");
+    const userName = document.getElementById("user-name");
+    const userTier = document.getElementById("user-tier");
+
+    fetch("/api/me")
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error("Identity unavailable")))
+      .then((identity) => {
+        userName.textContent = identity.name || "Signed in";
+        userTier.textContent = `${identity.tier} policy`;
+      })
+      .catch(() => {
+        userTier.textContent = "Policy tier unavailable";
+      });
 
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -185,10 +213,12 @@
       answer.className = "answer";
       answer.textContent = "";
       try {
+        const conversationId = sessionStorage.getItem("conversationId") || crypto.randomUUID();
+        sessionStorage.setItem("conversationId", conversationId);
         const response = await fetch("/api/run", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt: document.getElementById("prompt").value }),
+          body: JSON.stringify({ prompt: document.getElementById("prompt").value, conversationId }),
         });
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || "Request failed.");

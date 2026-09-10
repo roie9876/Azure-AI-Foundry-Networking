@@ -1,0 +1,8 @@
+{
+    "azureFunctions.deploySubpath": "deployment/sharepoint-sync-func/bin/Release/net10.0/publish",
+    "azureFunctions.projectLanguage": "C#",
+    "azureFunctions.projectRuntime": "~4",
+    "debug.internalConsoleOptions": "neverOpen",
+    "azureFunctions.projectSubpath": "deployment/sharepoint-sync-func",
+    "azureFunctions.preDeployTask": "publish (functions)"
+}

@@ -6,7 +6,9 @@
 .delta_tokens/
 __pycache__/
 *.pyc
+node_modules/
 local.settings.json
+.azure/validate-status.json
 .sharepoint-sync-repo/
 deployment/.sharepoint-sync-repo/
 chat-context.md
