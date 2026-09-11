@@ -1,25 +1,25 @@
-<mxfile host="app.diagrams.net" modified="2026-09-09T00:00:00.000Z" agent="GitHub Copilot" version="24.7.17" type="device">
-  <diagram id="self-hosted-content-safety" name="Self-Hosted AI Gateway with Local Content Safety">
-    <mxGraphModel dx="1700" dy="1000" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1900" pageHeight="1100" math="0" shadow="0">
+<mxfile host="app.diagrams.net" modified="2026-09-11T00:00:00.000Z" agent="GitHub Copilot" version="24.7.17" type="device">
+  <diagram id="self-hosted-content-safety" name="Self-Hosted AI Gateway with Local Safety">
+    <mxGraphModel dx="1900" dy="1000" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2200" pageHeight="1100" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
 
-        <mxCell id="title" value="AI Gateway: Customer-Hosted Content Safety Before Microsoft Foundry" style="text;html=1;fontSize=28;fontStyle=1;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#111827;" parent="1" vertex="1">
-          <mxGeometry x="220" y="25" width="1460" height="45" as="geometry" />
+        <mxCell id="title" value="AI Gateway: Customer-Hosted Prompt Shields and Content Safety" style="text;html=1;fontSize=28;fontStyle=1;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#111827;" parent="1" vertex="1">
+          <mxGeometry x="220" y="25" width="1760" height="45" as="geometry" />
         </mxCell>
         <mxCell id="subtitle" value="Prompts are classified next to the self-hosted gateway; Azure provides policy management plus container licensing and metering." style="text;html=1;fontSize=15;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#4b5563;" parent="1" vertex="1">
-          <mxGeometry x="280" y="72" width="1340" height="30" as="geometry" />
+          <mxGeometry x="280" y="72" width="1640" height="30" as="geometry" />
         </mxCell>
 
         <mxCell id="customer-zone" value="CUSTOMER-HOSTED ENVIRONMENT" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ecfdf5;strokeColor=#16a34a;strokeWidth=4;fontSize=18;fontStyle=1;align=center;verticalAlign=top;spacingTop=16;fontColor=#14532d;arcSize=8;" parent="1" vertex="1">
-          <mxGeometry x="45" y="140" width="900" height="710" as="geometry" />
+          <mxGeometry x="45" y="140" width="1200" height="710" as="geometry" />
         </mxCell>
         <mxCell id="azure-zone" value="AZURE MANAGEMENT AND METERING" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eff6ff;strokeColor=#2563eb;strokeWidth=4;fontSize=18;fontStyle=1;align=center;verticalAlign=top;spacingTop=16;fontColor=#1e3a8a;arcSize=8;" parent="1" vertex="1">
-          <mxGeometry x="995" y="140" width="420" height="710" as="geometry" />
+          <mxGeometry x="1295" y="140" width="420" height="710" as="geometry" />
         </mxCell>
         <mxCell id="model-zone" value="MICROSOFT FOUNDRY MODEL PLANE" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff7ed;strokeColor=#f97316;strokeWidth=4;fontSize=18;fontStyle=1;align=center;verticalAlign=top;spacingTop=16;fontColor=#7c2d12;arcSize=8;" parent="1" vertex="1">
-          <mxGeometry x="1465" y="140" width="390" height="710" as="geometry" />
+          <mxGeometry x="1765" y="140" width="390" height="710" as="geometry" />
         </mxCell>
 
         <mxCell id="app-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#22c55e;strokeWidth=2;arcSize=8;" parent="1" vertex="1">
@@ -41,117 +41,144 @@
         <mxCell id="gateway-label" value="&lt;b&gt;Self-hosted AI gateway&lt;/b&gt;&lt;br&gt;APIM container runtime" style="text;html=1;fontSize=16;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#0c4a6e;" parent="1" vertex="1">
           <mxGeometry x="385" y="345" width="185" height="58" as="geometry" />
         </mxCell>
-        <mxCell id="gateway-policy" value="Inbound product policy&lt;br&gt;Extract prompt&lt;br&gt;Call local safety API&lt;br&gt;Allow or return HTTP 403" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eff6ff;strokeColor=#93c5fd;fontSize=13;align=left;verticalAlign=middle;spacingLeft=14;fontColor=#1e3a8a;arcSize=8;" parent="1" vertex="1">
+        <mxCell id="gateway-policy" value="Inbound product policy&lt;br&gt;Extract prompt&lt;br&gt;Run both local safety checks&lt;br&gt;Allow or return HTTP 403" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eff6ff;strokeColor=#93c5fd;fontSize=13;align=left;verticalAlign=middle;spacingLeft=14;fontColor=#1e3a8a;arcSize=8;" parent="1" vertex="1">
           <mxGeometry x="390" y="415" width="175" height="92" as="geometry" />
         </mxCell>
 
         <mxCell id="safety-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#7c3aed;strokeWidth=3;arcSize=8;" parent="1" vertex="1">
-          <mxGeometry x="660" y="220" width="235" height="310" as="geometry" />
+          <mxGeometry x="940" y="220" width="235" height="310" as="geometry" />
         </mxCell>
         <mxCell id="safety-icon" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/ai_machine_learning/Cognitive_Services.svg;" parent="1" vertex="1">
-          <mxGeometry x="738" y="255" width="78" height="78" as="geometry" />
+          <mxGeometry x="1018" y="255" width="78" height="78" as="geometry" />
         </mxCell>
         <mxCell id="safety-label" value="&lt;b&gt;Content Safety container&lt;/b&gt;&lt;br&gt;Local text-analyze model" style="text;html=1;fontSize=16;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#5b21b6;" parent="1" vertex="1">
-          <mxGeometry x="685" y="345" width="185" height="58" as="geometry" />
+          <mxGeometry x="965" y="345" width="185" height="58" as="geometry" />
         </mxCell>
         <mxCell id="safety-functions" value="Hate&lt;br&gt;Violence&lt;br&gt;Sexual&lt;br&gt;Self-harm&lt;br&gt;Four severity levels: 0, 2, 4, 6" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f3ff;strokeColor=#c4b5fd;fontSize=13;align=left;verticalAlign=middle;spacingLeft=14;fontColor=#5b21b6;arcSize=8;" parent="1" vertex="1">
-          <mxGeometry x="690" y="415" width="175" height="92" as="geometry" />
+          <mxGeometry x="970" y="415" width="175" height="92" as="geometry" />
         </mxCell>
 
-        <mxCell id="blocked-box" value="&lt;b&gt;BLOCKED LOCALLY&lt;/b&gt;&lt;br&gt;HTTP 403 ContentSafetyViolation&lt;br&gt;No Foundry model call" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fee2e2;strokeColor=#c62828;strokeWidth=2;fontSize=14;align=center;verticalAlign=middle;fontColor=#991b1b;arcSize=8;" parent="1" vertex="1">
-          <mxGeometry x="360" y="650" width="235" height="110" as="geometry" />
+        <mxCell id="prompt-shields-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#7c3aed;strokeWidth=3;arcSize=8;" parent="1" vertex="1">
+          <mxGeometry x="650" y="220" width="220" height="310" as="geometry" />
+        </mxCell>
+        <mxCell id="prompt-shields-icon" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/ai_machine_learning/Cognitive_Services.svg;" parent="1" vertex="1">
+          <mxGeometry x="721" y="255" width="78" height="78" as="geometry" />
+        </mxCell>
+        <mxCell id="prompt-shields-label" value="&lt;b&gt;Prompt Shields container&lt;/b&gt;&lt;br&gt;Local jailbreak detection" style="text;html=1;fontSize=16;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#5b21b6;" parent="1" vertex="1">
+          <mxGeometry x="665" y="345" width="190" height="58" as="geometry" />
+        </mxCell>
+        <mxCell id="prompt-shields-functions" value="User prompt attacks&lt;br&gt;Indirect prompt injection&lt;br&gt;Role-play and encoding attacks&lt;br&gt;Allow or block" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f3ff;strokeColor=#c4b5fd;fontSize=13;align=left;verticalAlign=middle;spacingLeft=14;fontColor=#5b21b6;arcSize=8;" parent="1" vertex="1">
+          <mxGeometry x="680" y="415" width="160" height="92" as="geometry" />
+        </mxCell>
+
+        <mxCell id="blocked-box" value="&lt;b&gt;BLOCKED LOCALLY&lt;/b&gt;&lt;br&gt;HTTP 403 PromptAttackDetected&lt;br&gt;or ContentSafetyViolation&lt;br&gt;No Foundry model call" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fee2e2;strokeColor=#c62828;strokeWidth=2;fontSize=14;align=center;verticalAlign=middle;fontColor=#991b1b;arcSize=8;" parent="1" vertex="1">
+          <mxGeometry x="650" y="650" width="300" height="120" as="geometry" />
         </mxCell>
         <mxCell id="customer-note" value="Prompt content stays in the customer-hosted request path until an allowed request is sent to Foundry. The local container is not a PII detector." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dcfce7;strokeColor=#86efac;fontSize=13;align=center;verticalAlign=middle;fontColor=#14532d;arcSize=8;" parent="1" vertex="1">
-          <mxGeometry x="85" y="790" width="810" height="42" as="geometry" />
+          <mxGeometry x="85" y="790" width="1090" height="42" as="geometry" />
         </mxCell>
 
         <mxCell id="apim-icon" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/integration/API_Management_Services.svg;" parent="1" vertex="1">
-          <mxGeometry x="1080" y="220" width="80" height="80" as="geometry" />
+          <mxGeometry x="1380" y="220" width="80" height="80" as="geometry" />
         </mxCell>
         <mxCell id="apim-label" value="&lt;b&gt;Azure AI Gateway&lt;/b&gt;&lt;br&gt;APIs, products, policies,&lt;br&gt;gateway configuration" style="text;html=1;fontSize=15;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#1e3a8a;" parent="1" vertex="1">
-          <mxGeometry x="1030" y="315" width="180" height="75" as="geometry" />
+          <mxGeometry x="1330" y="315" width="180" height="75" as="geometry" />
         </mxCell>
         <mxCell id="billing-icon" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/ai_machine_learning/Cognitive_Services.svg;" parent="1" vertex="1">
-          <mxGeometry x="1080" y="465" width="80" height="80" as="geometry" />
+          <mxGeometry x="1380" y="465" width="80" height="80" as="geometry" />
         </mxCell>
         <mxCell id="billing-label" value="&lt;b&gt;Content Safety billing account&lt;/b&gt;&lt;br&gt;csc-aigw-shgw-*" style="text;html=1;fontSize=15;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#1e3a8a;" parent="1" vertex="1">
-          <mxGeometry x="1015" y="555" width="210" height="55" as="geometry" />
+          <mxGeometry x="1315" y="555" width="210" height="55" as="geometry" />
         </mxCell>
         <mxCell id="billing-note" value="Licensing + metering only&lt;br&gt;API key required by connected container&lt;br&gt;SecurityControl=Ignore&lt;br&gt;Do not delete while container runs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dbeafe;strokeColor=#93c5fd;fontSize=13;align=center;verticalAlign=middle;fontColor=#1e3a8a;arcSize=8;" parent="1" vertex="1">
-          <mxGeometry x="1030" y="625" width="180" height="105" as="geometry" />
+          <mxGeometry x="1330" y="625" width="180" height="105" as="geometry" />
         </mxCell>
         <mxCell id="policy-note" value="&lt;b&gt;Policy ownership&lt;/b&gt;&lt;br&gt;Edit APIM product policy or Bicep.&lt;br&gt;Foundry manages generated AI Gateway settings such as token limits, not the local container thresholds." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff9cc;strokeColor=#d6b656;fontSize=12;align=center;verticalAlign=middle;fontColor=#6b4f00;arcSize=8;" parent="1" vertex="1">
-          <mxGeometry x="1020" y="760" width="370" height="72" as="geometry" />
+          <mxGeometry x="1320" y="760" width="370" height="72" as="geometry" />
         </mxCell>
 
         <mxCell id="foundry-icon" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/ai_machine_learning/AI_Studio.svg;" parent="1" vertex="1">
-          <mxGeometry x="1615" y="250" width="85" height="85" as="geometry" />
+          <mxGeometry x="1915" y="250" width="85" height="85" as="geometry" />
         </mxCell>
         <mxCell id="foundry-label" value="&lt;b&gt;Microsoft Foundry resource&lt;/b&gt;&lt;br&gt;Model endpoint" style="text;html=1;fontSize=16;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#7c2d12;" parent="1" vertex="1">
-          <mxGeometry x="1555" y="345" width="205" height="58" as="geometry" />
+          <mxGeometry x="1855" y="345" width="205" height="58" as="geometry" />
         </mxCell>
-        <mxCell id="model-box" value="&lt;b&gt;LLM deployment&lt;/b&gt;&lt;br&gt;Receives only requests allowed by the local Content Safety policy" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#f97316;strokeWidth=2;fontSize=15;align=center;verticalAlign=middle;fontColor=#7c2d12;arcSize=8;" parent="1" vertex="1">
-          <mxGeometry x="1520" y="475" width="285" height="115" as="geometry" />
+        <mxCell id="model-box" value="&lt;b&gt;LLM deployment&lt;/b&gt;&lt;br&gt;Receives only requests allowed by both local safety policies" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#f97316;strokeWidth=2;fontSize=15;align=center;verticalAlign=middle;fontColor=#7c2d12;arcSize=8;" parent="1" vertex="1">
+          <mxGeometry x="1820" y="475" width="285" height="115" as="geometry" />
         </mxCell>
         <mxCell id="external-agent-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#f97316;strokeWidth=2;fontSize=15;align=center;verticalAlign=middle;fontColor=#7c2d12;arcSize=8;" parent="1" vertex="1">
-          <mxGeometry x="1520" y="620" width="285" height="105" as="geometry" />
+          <mxGeometry x="1820" y="620" width="285" height="105" as="geometry" />
         </mxCell>
         <mxCell id="external-agent-icon" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/ai_machine_learning/AI_Studio.svg;" parent="1" vertex="1">
-          <mxGeometry x="1540" y="640" width="62" height="62" as="geometry" />
+          <mxGeometry x="1840" y="640" width="62" height="62" as="geometry" />
         </mxCell>
         <mxCell id="external-agent-label" value="&lt;b&gt;External agent registration&lt;/b&gt;&lt;br&gt;OpenTelemetry traces&lt;br&gt;Monitoring and evaluation" style="text;html=1;fontSize=14;align=left;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#7c2d12;" parent="1" vertex="1">
-          <mxGeometry x="1615" y="635" width="175" height="75" as="geometry" />
+          <mxGeometry x="1915" y="635" width="175" height="75" as="geometry" />
         </mxCell>
         <mxCell id="model-note" value="The model remains Azure-hosted. Content Safety inference and policy enforcement run in the customer environment." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffedd5;strokeColor=#fdba74;fontSize=13;align=center;verticalAlign=middle;fontColor=#7c2d12;arcSize=8;" parent="1" vertex="1">
-          <mxGeometry x="1535" y="755" width="255" height="65" as="geometry" />
+          <mxGeometry x="1835" y="755" width="255" height="65" as="geometry" />
         </mxCell>
 
         <mxCell id="flow-app-gateway" value="1. LLM request&lt;br&gt;HTTPS:443" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#0078D4;strokeWidth=3;endArrow=block;endFill=1;fontColor=#005a9e;fontSize=12;fontStyle=1;labelBackgroundColor=#ffffff;" parent="1" source="app-box" target="gateway-box" edge="1">
           <mxGeometry x="0" y="-20" relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="flow-gateway-safety" value="2. Inspect prompt" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#7c3aed;strokeWidth=3;startArrow=block;startFill=1;endArrow=block;endFill=1;fontColor=#5b21b6;fontSize=11;fontStyle=1;labelBackgroundColor=#ffffff;" parent="1" source="gateway-box" target="safety-box" edge="1">
+        <mxCell id="flow-gateway-safety" value="2. Detect prompt attack" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#7c3aed;strokeWidth=3;startArrow=block;startFill=1;endArrow=block;endFill=1;fontColor=#5b21b6;fontSize=11;fontStyle=1;labelBackgroundColor=#ffffff;" parent="1" source="gateway-box" target="prompt-shields-box" edge="1">
           <mxGeometry x="0" y="-42" relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="flow-gateway-model" value="3a. Allowed request&lt;br&gt;HTTPS:443" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#0078D4;strokeWidth=3;endArrow=block;endFill=1;fontColor=#005a9e;fontSize=12;fontStyle=1;labelBackgroundColor=#ffffff;" parent="1" source="safety-box" target="model-box" edge="1">
+        <mxCell id="flow-prompt-safety" value="3. No attack: inspect harm" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#7c3aed;strokeWidth=3;endArrow=block;endFill=1;fontColor=#5b21b6;fontSize=11;fontStyle=1;labelBackgroundColor=#ffffff;" parent="1" source="prompt-shields-box" target="safety-box" edge="1">
+          <mxGeometry x="0" y="-42" relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-gateway-model" value="4a. Allowed request&lt;br&gt;HTTPS:443" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#0078D4;strokeWidth=3;endArrow=block;endFill=1;fontColor=#005a9e;fontSize=12;fontStyle=1;labelBackgroundColor=#ffffff;" parent="1" source="safety-box" target="model-box" edge="1">
           <mxGeometry x="0" y="-16" relative="1" as="geometry">
             <Array as="points">
-              <mxPoint x="940" y="430" />
-              <mxPoint x="1435" y="430" />
+              <mxPoint x="1230" y="430" />
+              <mxPoint x="1735" y="430" />
             </Array>
           </mxGeometry>
         </mxCell>
-        <mxCell id="flow-gateway-block" value="3b. Harm threshold met" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#C62828;strokeWidth=3;endArrow=block;endFill=1;fontColor=#991b1b;fontSize=12;fontStyle=1;labelBackgroundColor=#ecfdf5;" parent="1" source="gateway-box" target="blocked-box" edge="1">
+        <mxCell id="flow-gateway-block" value="3a. Attack detected" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#C62828;strokeWidth=3;endArrow=block;endFill=1;fontColor=#991b1b;fontSize=12;fontStyle=1;labelBackgroundColor=#ecfdf5;" parent="1" source="prompt-shields-box" target="blocked-box" edge="1">
           <mxGeometry x="0" y="-12" relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-safety-block" value="4b. Harm threshold met" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#C62828;strokeWidth=3;endArrow=block;endFill=1;fontColor=#991b1b;fontSize=12;fontStyle=1;labelBackgroundColor=#ecfdf5;" parent="1" source="safety-box" target="blocked-box" edge="1">
+          <mxGeometry x="0" y="12" relative="1" as="geometry" />
         </mxCell>
         <mxCell id="flow-apim-gateway" value="Policy + configuration sync&lt;br&gt;Outbound HTTPS:443" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#F57C00;strokeWidth=2;dashed=1;dashPattern=8 8;startArrow=block;startFill=1;endArrow=block;endFill=1;fontColor=#b45309;fontSize=11;fontStyle=1;labelBackgroundColor=#ffffff;" parent="1" source="apim-icon" target="gateway-box" edge="1">
           <mxGeometry x="0" y="-20" relative="1" as="geometry">
             <Array as="points">
-              <mxPoint x="970" y="185" />
+              <mxPoint x="1270" y="185" />
               <mxPoint x="620" y="185" />
             </Array>
           </mxGeometry>
         </mxCell>
-        <mxCell id="flow-safety-billing" value="4. Licensing + usage meter&lt;br&gt;Outbound HTTPS:443" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#F57C00;strokeWidth=2;dashed=1;dashPattern=8 8;endArrow=block;endFill=1;fontColor=#b45309;fontSize=11;fontStyle=1;labelBackgroundColor=#ffffff;" parent="1" source="safety-box" target="billing-icon" edge="1">
+        <mxCell id="flow-safety-billing" value="5. Licensing + usage meter&lt;br&gt;Outbound HTTPS:443" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#F57C00;strokeWidth=2;dashed=1;dashPattern=8 8;endArrow=block;endFill=1;fontColor=#b45309;fontSize=11;fontStyle=1;labelBackgroundColor=#ffffff;" parent="1" source="safety-box" target="billing-icon" edge="1">
           <mxGeometry x="0" y="-18" relative="1" as="geometry">
             <Array as="points">
-              <mxPoint x="960" y="510" />
+              <mxPoint x="1260" y="510" />
             </Array>
           </mxGeometry>
         </mxCell>
-        <mxCell id="flow-app-external-agent" value="5. OpenTelemetry traces&lt;br&gt;Outbound HTTPS:443" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#00897B;strokeWidth=2;dashed=1;dashPattern=8 8;endArrow=block;endFill=1;fontColor=#00695c;fontSize=11;fontStyle=1;labelBackgroundColor=#ffffff;" parent="1" source="app-box" target="external-agent-box" edge="1">
+        <mxCell id="flow-prompt-billing" value="5. Licensing + usage meter" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#F57C00;strokeWidth=2;dashed=1;dashPattern=8 8;endArrow=block;endFill=1;fontColor=#b45309;fontSize=11;fontStyle=1;labelBackgroundColor=#ffffff;" parent="1" source="prompt-shields-box" target="billing-icon" edge="1">
+          <mxGeometry x="0" y="18" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="900" y="560" />
+              <mxPoint x="1280" y="560" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="flow-app-external-agent" value="6. OpenTelemetry traces&lt;br&gt;Outbound HTTPS:443" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#00897B;strokeWidth=2;dashed=1;dashPattern=8 8;endArrow=block;endFill=1;fontColor=#00695c;fontSize=11;fontStyle=1;labelBackgroundColor=#ffffff;" parent="1" source="app-box" target="external-agent-box" edge="1">
           <mxGeometry x="0" y="-18" relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="320" y="610" />
-              <mxPoint x="1440" y="610" />
+              <mxPoint x="1740" y="610" />
             </Array>
           </mxGeometry>
         </mxCell>
 
         <mxCell id="legend" value="&lt;b&gt;Legend&lt;/b&gt;&amp;nbsp;&amp;nbsp; Blue: LLM data path &amp;nbsp;&amp;nbsp; Purple: local safety inspection &amp;nbsp;&amp;nbsp; Teal dashed: OpenTelemetry &amp;nbsp;&amp;nbsp; Amber dashed: management / metering &amp;nbsp;&amp;nbsp; Red: blocked locally" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d1d5db;fontSize=13;align=center;verticalAlign=middle;fontColor=#374151;arcSize=8;" parent="1" vertex="1">
-          <mxGeometry x="275" y="910" width="1350" height="48" as="geometry" />
+          <mxGeometry x="400" y="910" width="1400" height="48" as="geometry" />
         </mxCell>
-        <mxCell id="boundary-note" value="&lt;b&gt;Boundary rule:&lt;/b&gt; Prompt classification happens inside the customer-hosted environment. The Azure billing account is required to license and meter the connected container, but it is not the inference endpoint used by APIM." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff9cc;strokeColor=#d6b656;fontSize=14;align=center;verticalAlign=middle;fontColor=#6b4f00;arcSize=8;" parent="1" vertex="1">
-          <mxGeometry x="275" y="980" width="1350" height="60" as="geometry" />
+        <mxCell id="boundary-note" value="&lt;b&gt;Boundary rule:&lt;/b&gt; Jailbreak and harm classification happen inside the customer-hosted environment. The Azure billing account licenses and meters both connected containers; it is not the inference endpoint used by APIM." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff9cc;strokeColor=#d6b656;fontSize=14;align=center;verticalAlign=middle;fontColor=#6b4f00;arcSize=8;" parent="1" vertex="1">
+          <mxGeometry x="400" y="980" width="1400" height="60" as="geometry" />
         </mxCell>
       </root>
     </mxGraphModel>

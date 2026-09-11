@@ -7,6 +7,9 @@ param foundryProductId string
 @description('Internal endpoint of the customer-hosted Content Safety container.')
 param contentSafetyEndpoint string
 
+@description('Internal endpoint of the customer-hosted Prompt Shields container.')
+param promptShieldsEndpoint string
+
 @description('Require Microsoft Entra authentication and apply role-specific controls.')
 param enableEntraAuth bool = false
 
@@ -77,7 +80,7 @@ resource contentSafetyPolicy 'Microsoft.ApiManagement/service/products/policies@
   name: 'policy'
   properties: {
     format: 'xml'
-    value: replace(replace(replace(replace(replace(replace(replace('''
+    value: replace(replace(replace(replace(replace(replace(replace(replace('''
       <policies>
         <inbound>
           <base />
@@ -92,6 +95,49 @@ __TOKEN_LIMIT_POLICY__
           }" />
           <choose>
             <when condition="@(!string.IsNullOrWhiteSpace((string)context.Variables[&quot;contentSafetyText&quot;]))">
+              <send-request mode="new" response-variable-name="promptShieldsResponse" timeout="30" ignore-error="false">
+                <set-url>__PROMPT_SHIELDS_ENDPOINT__/contentsafety/jailbreak:analyze</set-url>
+                <set-method>POST</set-method>
+                <set-header name="Content-Type" exists-action="override">
+                  <value>application/json</value>
+                </set-header>
+                <set-body>@{
+                  return new JObject(
+                    new JProperty(&quot;text&quot;, (string)context.Variables[&quot;contentSafetyText&quot;]),
+                    new JProperty(&quot;outputType&quot;, 0)
+                  ).ToString();
+                }</set-body>
+              </send-request>
+              <set-variable name="promptShieldsBlockReason" value="@{
+                var response = (IResponse)context.Variables[&quot;promptShieldsResponse&quot;];
+                if (response.StatusCode != 200) { return &quot;Prompt Shields service unavailable&quot;; }
+                var result = response.Body.As&lt;JObject&gt;();
+                var jailbreak = result[&quot;jailbreak&quot;] as JObject;
+                var xpia = result[&quot;xpia&quot;] as JObject;
+                if (jailbreak == null &amp;&amp; xpia == null) { return &quot;Invalid Prompt Shields response&quot;; }
+                if (((int?)jailbreak?[&quot;class&quot;] ?? 0) != 0) { return &quot;User prompt attack detected&quot;; }
+                if (((int?)xpia?[&quot;class&quot;] ?? 0) != 0) { return &quot;Indirect prompt attack detected&quot;; }
+                return string.Empty;
+              }" />
+              <choose>
+                <when condition="@(!string.IsNullOrEmpty((string)context.Variables[&quot;promptShieldsBlockReason&quot;]))">
+                  <return-response>
+                    <set-status code="403" reason="Prompt Shields blocked the prompt" />
+                    <set-header name="Content-Type" exists-action="override">
+                      <value>application/json</value>
+                    </set-header>
+                    <set-body>@{
+                      return new JObject(
+                        new JProperty(&quot;error&quot;, new JObject(
+                          new JProperty(&quot;code&quot;, &quot;PromptAttackDetected&quot;),
+                          new JProperty(&quot;message&quot;, &quot;Prompt blocked by Microsoft Prompt Shields.&quot;),
+                          new JProperty(&quot;reason&quot;, (string)context.Variables[&quot;promptShieldsBlockReason&quot;])
+                        ))
+                      ).ToString();
+                    }</set-body>
+                  </return-response>
+                </when>
+              </choose>
               <send-request mode="new" response-variable-name="contentSafetyResponse" timeout="30" ignore-error="false">
                 <set-url>__CONTENT_SAFETY_ENDPOINT__/contentsafety/text:analyze?api-version=2024-09-01</set-url>
                 <set-method>POST</set-method>
@@ -160,6 +206,6 @@ __TOKEN_LIMIT_POLICY__
           <base />
         </on-error>
       </policies>
-    ''', '__CONTENT_SAFETY_ENDPOINT__', contentSafetyEndpoint), '__ENTRA_POLICY__', entraPolicy), '__TOKEN_LIMIT_POLICY__', tokenLimitPolicy), '__HATE_THRESHOLD_EXPRESSION__', hateThresholdExpression), '__VIOLENCE_THRESHOLD__', string(violenceThreshold)), '__SEXUAL_THRESHOLD__', string(sexualThreshold)), '__SELF_HARM_THRESHOLD__', string(selfHarmThreshold))
+    ''', '__CONTENT_SAFETY_ENDPOINT__', contentSafetyEndpoint), '__PROMPT_SHIELDS_ENDPOINT__', promptShieldsEndpoint), '__ENTRA_POLICY__', entraPolicy), '__TOKEN_LIMIT_POLICY__', tokenLimitPolicy), '__HATE_THRESHOLD_EXPRESSION__', hateThresholdExpression), '__VIOLENCE_THRESHOLD__', string(violenceThreshold)), '__SEXUAL_THRESHOLD__', string(sexualThreshold)), '__SELF_HARM_THRESHOLD__', string(selfHarmThreshold))
   }
 }

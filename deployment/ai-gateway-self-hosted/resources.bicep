@@ -222,7 +222,7 @@ resource containerEnvironment 'Microsoft.App/managedEnvironments@2024-03-01' = {
         name: 'cs-d4'
         workloadProfileType: 'D4'
         minimumCount: 0
-        maximumCount: 1
+        maximumCount: 2
       }
     ]
     appLogsConfiguration: {

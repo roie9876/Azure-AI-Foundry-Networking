@@ -3340,12 +3340,12 @@ Application Insights integration is optional and is not required for the native
 
 ---
 
-## Part 17: Customer-Hosted Content Safety for the Self-Hosted AI Gateway
+## Part 17: Customer-Hosted Prompt Shields and Content Safety
 
 Chapter 16 placed the APIM gateway data plane in a customer-selected environment.
-This chapter adds a second local runtime: the Azure AI Content Safety text-analysis
-container. APIM inspects each incoming prompt with that container before an allowed
-request is sent to the Microsoft Foundry model.
+This chapter adds two local Microsoft safety runtimes: Prompt Shields for jailbreak
+detection and Azure AI Content Safety for text analysis. APIM runs both checks before
+an allowed request is sent to the Microsoft Foundry model.
 
 This pattern is useful when the customer wants prompt classification to run on-premises,
 in another cloud, at an edge location, or beside a customer-hosted gateway. Azure still
@@ -3354,7 +3354,7 @@ licensing and metering.
 
 ### 17.1 Implemented Architecture
 
-![Self-hosted AI Gateway with customer-hosted Content Safety](docs/images/ai-gateway-self-hosted-content-safety.png)
+![Self-hosted AI Gateway with customer-hosted Prompt Shields and Content Safety](docs/images/ai-gateway-self-hosted-content-safety.png)
 
 Editable source: [Customer-hosted Content Safety diagram](docs/ai-gateway-self-hosted-content-safety.drawio)
 
@@ -3364,9 +3364,10 @@ The validated lab uses these components:
 |---|---|---|
 | Application and demo UI | `ca-shgw-demo` UI container | Sends OpenAI-compatible Responses API requests |
 | Self-hosted APIM gateway | `ca-shgw-demo` gateway container | Authenticates the caller, executes the product policy, blocks or forwards |
+| Prompt Shields runtime | `ca-prompt-shields` | Internal-only jailbreak and prompt-injection detection container |
 | Content Safety runtime | `ca-content-safety` | Internal-only text-analysis container; classification runs here |
-| Container Apps environment | `cae-aigw-shgw-demo1234` | Shared customer-hosted network boundary for the gateway and safety container |
-| Dedicated workload profile | `cs-d4` | D4, 4 vCPU and 16 GiB; needed because the Content Safety image exceeds the Consumption image-size limit |
+| Container Apps environment | `cae-aigw-shgw-demo1234` | Shared customer-hosted network boundary for the gateway and safety containers |
+| Dedicated workload profile | `cs-d4` | Up to two D4 nodes; one 4-vCPU/16-GiB replica per Microsoft safety container |
 | Container billing account | `csc-aigw-shgw-demo1234` | S0 licensing, key validation, model-key retrieval, and usage metering |
 | APIM management plane | `apim-aigw-shgw-demo1234` | Stores the API, generated product, subscription, and custom inbound policy |
 | Foundry model | `gpt-4.1-mini` | Processes only requests allowed by the local policy |

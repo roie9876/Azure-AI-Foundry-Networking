@@ -24,6 +24,7 @@ REGISTRY_NAME="acraigwshgw${SUFFIX}"
 UI_IMAGE_REPOSITORY="aigw-demo-ui"
 CONTENT_SAFETY_CONTAINER_ACCOUNT_NAME="csc-aigw-shgw-${SUFFIX}"
 CONTENT_SAFETY_APP_NAME="ca-content-safety"
+PROMPT_SHIELDS_APP_NAME="ca-prompt-shields"
 CONTENT_SAFETY_PROFILE_NAME="cs-d4"
 CONTENT_SAFETY_HATE_THRESHOLD="${CONTENT_SAFETY_HATE_THRESHOLD:-1}"
 CONTENT_SAFETY_VIOLENCE_THRESHOLD="${CONTENT_SAFETY_VIOLENCE_THRESHOLD:-1}"
@@ -38,8 +39,8 @@ TOKEN_STORE_CONTAINER_NAME="auth-tokens"
 MODE="${1:-all}"
 
 case "$MODE" in
-  infra|gateway|ui|assign|safety-container|safety-local|all) ;;
-  *) echo "Usage: $0 [infra|gateway|ui|assign|safety-container|safety-local|all]" >&2; exit 2 ;;
+  infra|gateway|ui|assign|safety-container|prompt-shields-container|safety-local|all) ;;
+  *) echo "Usage: $0 [infra|gateway|ui|assign|safety-container|prompt-shields-container|safety-local|all]" >&2; exit 2 ;;
 esac
 
 for command_name in az jq curl; do
@@ -266,18 +267,102 @@ deploy_content_safety_container() {
   echo "[OK] Content Safety container deployment submitted. Managed APIM safety routing is unchanged."
 }
 
+deploy_prompt_shields_container() {
+  local content_safety_key billing_endpoint latest_revision stale_revision revision_suffix
+
+  echo "[INFO] Ensuring the tagged Content Safety metering account exists"
+  az deployment group create \
+    --name "${DEPLOYMENT_NAME}-content-safety-container-account" \
+    --resource-group "$RESOURCE_GROUP" \
+    --template-file "$SCRIPT_DIR/content-safety-container-account.bicep" \
+    --parameters location="$LOCATION" suffix="$SUFFIX" \
+    --output none
+
+  if [[ "$(az containerapp env workload-profile list --name "$CONTAINER_ENVIRONMENT_NAME" --resource-group "$RESOURCE_GROUP" --query "[?name=='${CONTENT_SAFETY_PROFILE_NAME}'] | length(@)" --output tsv)" -eq 0 ]]; then
+    echo "[INFO] Adding the D4 workload profile for the Content Safety images"
+    az containerapp env workload-profile add \
+      --name "$CONTAINER_ENVIRONMENT_NAME" \
+      --resource-group "$RESOURCE_GROUP" \
+      --workload-profile-name "$CONTENT_SAFETY_PROFILE_NAME" \
+      --workload-profile-type D4 \
+      --min-nodes 0 \
+      --max-nodes 2 \
+      --output none
+  else
+    echo "[INFO] Allowing the D4 workload profile to scale for both safety containers"
+    az containerapp env workload-profile update \
+      --name "$CONTAINER_ENVIRONMENT_NAME" \
+      --resource-group "$RESOURCE_GROUP" \
+      --workload-profile-name "$CONTENT_SAFETY_PROFILE_NAME" \
+      --min-nodes 0 \
+      --max-nodes 2 \
+      --output none
+  fi
+
+  if az containerapp show --name "$PROMPT_SHIELDS_APP_NAME" --resource-group "$RESOURCE_GROUP" --output none 2>/dev/null; then
+    latest_revision="$(az containerapp show --name "$PROMPT_SHIELDS_APP_NAME" --resource-group "$RESOURCE_GROUP" --query properties.latestRevisionName --output tsv)"
+    while IFS= read -r stale_revision; do
+      [[ -z "$stale_revision" || "$stale_revision" == "$latest_revision" ]] && continue
+      az containerapp revision deactivate \
+        --name "$PROMPT_SHIELDS_APP_NAME" \
+        --resource-group "$RESOURCE_GROUP" \
+        --revision "$stale_revision" \
+        --output none
+    done < <(az containerapp revision list --name "$PROMPT_SHIELDS_APP_NAME" --resource-group "$RESOURCE_GROUP" --query '[?properties.active].name' --output tsv)
+  fi
+
+  content_safety_key="$(az cognitiveservices account keys list --resource-group "$RESOURCE_GROUP" --name "$CONTENT_SAFETY_CONTAINER_ACCOUNT_NAME" --query key1 --output tsv)"
+  billing_endpoint="$(az cognitiveservices account show --resource-group "$RESOURCE_GROUP" --name "$CONTENT_SAFETY_CONTAINER_ACCOUNT_NAME" --query properties.endpoint --output tsv)"
+  revision_suffix="$(date -u '+%Y%m%d%H%M%S')"
+  echo "[INFO] Deploying the internal Prompt Shields container on D4"
+  az deployment group create \
+    --name "${DEPLOYMENT_NAME}-prompt-shields-container" \
+    --resource-group "$RESOURCE_GROUP" \
+    --template-file "$SCRIPT_DIR/prompt-shields-container.bicep" \
+    --parameters \
+      location="$LOCATION" \
+      containerEnvironmentName="$CONTAINER_ENVIRONMENT_NAME" \
+      workloadProfileName="$CONTENT_SAFETY_PROFILE_NAME" \
+      contentSafetyKey="$content_safety_key" \
+      contentSafetyBillingEndpoint="$billing_endpoint" \
+      revisionSuffix="$revision_suffix" \
+    --output none
+  unset content_safety_key
+
+  latest_revision="$(az containerapp show --name "$PROMPT_SHIELDS_APP_NAME" --resource-group "$RESOURCE_GROUP" --query properties.latestRevisionName --output tsv)"
+  while IFS= read -r stale_revision; do
+    [[ -z "$stale_revision" || "$stale_revision" == "$latest_revision" ]] && continue
+    az containerapp revision deactivate \
+      --name "$PROMPT_SHIELDS_APP_NAME" \
+      --resource-group "$RESOURCE_GROUP" \
+      --revision "$stale_revision" \
+      --output none
+  done < <(az containerapp revision list --name "$PROMPT_SHIELDS_APP_NAME" --resource-group "$RESOURCE_GROUP" --query '[?properties.active].name' --output tsv)
+
+  echo "[OK] Prompt Shields container deployment submitted. APIM routing is unchanged."
+}
+
 use_content_safety_container() {
   : "${APIM_SUBSCRIPTION_ID:?Set APIM_SUBSCRIPTION_ID in $ENV_FILE after Foundry association}"
   if [[ "$ENABLE_ENTRA_AUTH" == 'true' ]]; then
     : "${ENTRA_TENANT_ID:?Set ENTRA_TENANT_ID in $ENV_FILE}"
     : "${ENTRA_CLIENT_ID:?Set ENTRA_CLIENT_ID in $ENV_FILE}"
   fi
-  local subscription_scope foundry_product_id safety_fqdn latest_ready_revision ready_replica_count
+  local subscription_scope foundry_product_id safety_fqdn prompt_shields_fqdn
+  local latest_ready_revision ready_replica_count prompt_shields_revision
   latest_ready_revision="$(az containerapp show --name "$CONTENT_SAFETY_APP_NAME" --resource-group "$RESOURCE_GROUP" --query properties.latestReadyRevisionName --output tsv)"
   [[ -n "$latest_ready_revision" ]] || { echo '[ERROR] Content Safety container has no ready revision' >&2; exit 1; }
   ready_replica_count="$(az containerapp replica list --name "$CONTENT_SAFETY_APP_NAME" --resource-group "$RESOURCE_GROUP" --revision "$latest_ready_revision" --query "[?properties.runningState=='Running'].properties.containers[] | [?ready == \`true\`] | length(@)" --output tsv)"
   [[ "$ready_replica_count" -gt 0 ]] || {
     echo "[ERROR] Content Safety revision $latest_ready_revision has no running, ready replica" >&2
+    exit 1
+  }
+
+  prompt_shields_revision="$(az containerapp show --name "$PROMPT_SHIELDS_APP_NAME" --resource-group "$RESOURCE_GROUP" --query properties.latestReadyRevisionName --output tsv)"
+  [[ -n "$prompt_shields_revision" ]] || { echo '[ERROR] Prompt Shields container has no ready revision' >&2; exit 1; }
+  ready_replica_count="$(az containerapp replica list --name "$PROMPT_SHIELDS_APP_NAME" --resource-group "$RESOURCE_GROUP" --revision "$prompt_shields_revision" --query "[?properties.runningState=='Running'].properties.containers[] | [?ready == \`true\`] | length(@)" --output tsv)"
+  [[ "$ready_replica_count" -gt 0 ]] || {
+    echo "[ERROR] Prompt Shields revision $prompt_shields_revision has no running, ready replica" >&2
     exit 1
   }
 
@@ -287,6 +372,7 @@ use_content_safety_container() {
   [[ "$subscription_scope" == */products/* ]]
   foundry_product_id="${subscription_scope##*/}"
   safety_fqdn="$(az containerapp show --name "$CONTENT_SAFETY_APP_NAME" --resource-group "$RESOURCE_GROUP" --query properties.configuration.ingress.fqdn --output tsv)"
+  prompt_shields_fqdn="$(az containerapp show --name "$PROMPT_SHIELDS_APP_NAME" --resource-group "$RESOURCE_GROUP" --query properties.configuration.ingress.fqdn --output tsv)"
 
   echo "[INFO] Routing APIM Content Safety checks to the internal container"
   az deployment group create \
@@ -297,6 +383,7 @@ use_content_safety_container() {
       apimName="$APIM_NAME" \
       foundryProductId="$foundry_product_id" \
       contentSafetyEndpoint="https://${safety_fqdn}" \
+      promptShieldsEndpoint="https://${prompt_shields_fqdn}" \
       enableEntraAuth="$ENABLE_ENTRA_AUTH" \
       entraTenantId="$ENTRA_TENANT_ID" \
       entraClientId="$ENTRA_CLIENT_ID" \
@@ -305,7 +392,7 @@ use_content_safety_container() {
       sexualThreshold="$CONTENT_SAFETY_SEXUAL_THRESHOLD" \
       selfHarmThreshold="$CONTENT_SAFETY_SELF_HARM_THRESHOLD" \
     --output none
-  echo "[OK] APIM now uses the customer-hosted Content Safety container."
+  echo "[OK] APIM now uses the customer-hosted Prompt Shields and Content Safety containers."
 }
 
 case "$MODE" in
@@ -314,6 +401,7 @@ case "$MODE" in
   ui) deploy_gateway_container true ;;
   assign) assign_foundry_api ;;
   safety-container) deploy_content_safety_container ;;
+  prompt-shields-container) deploy_prompt_shields_container ;;
   safety-local) use_content_safety_container ;;
   all)
     deploy_infrastructure

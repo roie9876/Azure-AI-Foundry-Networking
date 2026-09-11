@@ -111,7 +111,7 @@ Open Microsoft Foundry, select `proj-aigw-shgw-demo`, open `ai-gateway-external-
 
 ## Content Safety demo
 
-The customer-hosted path runs the Microsoft Content Safety image inside the same Container Apps environment as the self-hosted gateway. The Azure Content Safety account is used only for licensing and metering.
+The customer-hosted path runs the Microsoft Content Safety and Prompt Shields images inside the same Container Apps environment as the self-hosted gateway. The Azure Content Safety account is used only for licensing and metering.
 
 The management-group policy normally forces `disableLocalAuth=true`. This lab applies `SecurityControl=Ignore` only to the dedicated container billing account `csc-aigw-shgw-demo1234`, enabling the API key required by the connected container.
 
@@ -123,7 +123,16 @@ Deploy the local container without changing APIM routing:
 bash ./deploy.sh safety-container
 ```
 
-The image exceeds the Container Apps Consumption image limit of 8 GB. The deployment therefore adds a D4 profile named `cs-d4` and assigns only `ca-content-safety` to it. The gateway and UI remain on Consumption. The container uses the current `text-analyze:latest` preview image and runs with 4 vCPU, 16 GiB, `CUDA_ENABLED=false`, internal-only ingress, and one replica.
+The images exceed or can exceed the Container Apps Consumption image limit of 8 GB. The deployment therefore adds a D4 profile named `cs-d4` with capacity for two nodes and assigns only `ca-content-safety` and `ca-prompt-shields` to it. The gateway and UI remain on Consumption. Each safety container runs with 4 vCPU, 16 GiB, `CUDA_ENABLED=false`, internal-only ingress, and one replica. CPU mode is suitable for this demonstration; Microsoft recommends NVIDIA CUDA for optimal performance.
+
+Deploy and validate Microsoft Prompt Shields without changing APIM routing:
+
+```bash
+bash ./deploy.sh prompt-shields-container
+bash ./validate.sh prompt-shields-container
+```
+
+The `promptshields:latest` preview image detects direct jailbreak attempts in user prompts and indirect prompt injection in supplied documents. The current Responses API policy sends the extracted request input as `userPrompt`; document scanning can be added when the API begins forwarding separately identified grounding documents.
 
 Validate the container before changing APIM:
 
@@ -131,7 +140,7 @@ Validate the container before changing APIM:
 bash ./validate.sh safety-container
 ```
 
-After validation passes, deploy the local-only product policy with the internal `ca-content-safety` FQDN. The policy extracts the Responses API `input` and calls the local `/contentsafety/text:analyze` endpoint before the Foundry API policy runs.
+After both container validations pass, deploy the local-only product policy with the internal `ca-prompt-shields` and `ca-content-safety` FQDNs. The policy extracts the Responses API `input`, calls the preview container's `/contentsafety/jailbreak:analyze` endpoint first, then calls `/contentsafety/text:analyze` before the Foundry API policy runs. A detected prompt attack returns HTTP `403` with code `PromptAttackDetected`; harmful content returns HTTP `403` with code `ContentSafetyViolation`.
 
 Set each category threshold in `demo.env` before deploying the policy. Lower values are stricter, and a category is blocked when its returned severity is greater than or equal to the configured threshold.
 
@@ -162,7 +171,7 @@ Run the end-to-end proof:
 ./validate.sh safety
 ```
 
-The check sends one safe prompt and expects HTTP `200`, then sends a clearly graphic violent prompt and expects HTTP `403` with `ContentSafetyViolation`. The same blocked prompt entered at the public UI displays `Prompt blocked by Azure AI Content Safety.` Capture the applied result as `docs/images/ai-gateway-self-hosted-azure/06-content-safety-blocked.png`.
+The check sends one safe prompt and expects HTTP `200`, sends a clearly graphic violent prompt and expects HTTP `403` with `ContentSafetyViolation`, then sends a jailbreak prompt and expects HTTP `403` with `PromptAttackDetected`. The same blocked prompts can be tested through the public UI. Capture the applied Prompt Shields result as `docs/images/ai-gateway-self-hosted-azure/09-prompt-shields-blocked.png`.
 
 Key changes require a fresh Container Apps revision. Set `ROTATE_CONTENT_SAFETY_KEY=true` only when rotation is required; normal reruns reuse the current key. Azure's container metering backend can take several minutes to recognize a newly regenerated key.
 

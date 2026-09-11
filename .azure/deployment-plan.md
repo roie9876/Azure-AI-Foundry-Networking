@@ -2,7 +2,7 @@
 
 ## Status
 
-Deployed and verified on 2026-09-09 with APIM using the customer-hosted Content Safety container. The temporary managed fallback account was subsequently deleted.
+Deployed on 2026-09-11 with Microsoft Prompt Shields and Content Safety enforced by APIM. Authenticated browser validation of the final jailbreak response remains pending.
 
 ## Target
 
@@ -22,10 +22,11 @@ Deployed and verified on 2026-09-09 with APIM using the customer-hosted Content 
 - Avoid storing gateway tokens, model keys, or subscription keys in source control.
 - Include repeatable infrastructure/configuration and cleanup instructions.
 - Inspect every Responses API prompt with Azure AI Content Safety before forwarding it to the model.
+- Inspect every Responses API prompt with the Microsoft Prompt Shields container and block detected jailbreaks before content moderation or model invocation.
 - Block prompts with medium-or-higher severity in Hate, SelfHarm, Sexual, or Violence and return a demonstrable HTTP 403 response.
 - Apply the management-group policy exemption tag `SecurityControl=Ignore` to only the dedicated Content Safety account, enable local authentication, and use its key only as the connected container's metering credential.
 - Run the Content Safety image as a CPU lab Container App in the existing environment, then route APIM inspection to that internal endpoint only after it is healthy.
-- Add one `D4` workload profile named `cs-d4` with zero minimum and one maximum node because the Microsoft image exceeds the Consumption profile's 8 GB image limit. Assign only `ca-content-safety` to this profile.
+- Use one `D4` workload profile named `cs-d4` with zero minimum and two maximum nodes because the Microsoft images exceed or can exceed the Consumption profile's 8 GB image limit. Assign only `ca-content-safety` and `ca-prompt-shields` to this profile; keep the gateway and UI on Consumption.
 - Require Microsoft Entra sign-in before users can access the demo UI.
 - Assign `AI.Limited` to one Entra security group and enforce Hate threshold 1 plus a per-user 1 TPM limit.
 - Assign `AI.Unlimited` to a second Entra security group and enforce Hate threshold 7 with no LLM token limit.
@@ -71,10 +72,14 @@ generated AI Gateway API policy forwards an allowed request to the model:
 
 APIM self-hosted gateway
 	|
-	| internal HTTPS /text:analyze
+	| internal HTTPS /jailbreak:analyze
 	v
-Azure AI Content Safety managed endpoint
+Microsoft Prompt Shields container
 	|
+	| no attack detected
+	v
+Microsoft Content Safety container /text:analyze
+	v
 	| severity below threshold: continue; otherwise HTTP 403
 	v
 Generated Foundry API policy
@@ -110,6 +115,7 @@ Names with `<suffix>` receive one generated lowercase suffix during deployment a
 | Container Apps environment | `cae-aigw-shgw-<suffix>` | Consumption workload profile |
 | Container app | `ca-shgw-demo` | Public UI on port 3000 plus local gateway sidecar on port 8080 |
 | Content Safety billing account | `csc-aigw-shgw-<suffix>` | S0 account used only for connected-container licensing and metering |
+| Prompt Shields container app | `ca-prompt-shields` | Internal-only Microsoft `promptshields` preview image on `cs-d4` |
 
 No VNet, private endpoint, Key Vault, storage account, or custom domain is required. A Basic ACR stores the private end-user UI image.
 
@@ -149,7 +155,7 @@ Expected baseline: approximately `$62/month` plus model tokens, logs, and any ne
 
 The Content Safety extension adds S0 request charges. No additional container compute is deployed.
 
-The customer-hosted container adds D4 dedicated-profile charges while its node is allocated. The profile allows zero nodes, but this demo's `minReplicas=1` keeps one D4 node allocated until the app is stopped or removed.
+The two customer-hosted safety containers can allocate up to two D4 nodes. Each app has `minReplicas=1`, so both nodes can remain allocated until the apps are stopped or removed.
 
 ## Validation
 
@@ -174,6 +180,12 @@ Recipe type: Bicep, subscription scope.
 - [x] The effective `CognitiveServices_LocalAuth_Modify` policy was inspected and confirms `SecurityControl=Ignore` bypasses the local-auth modification at resource or resource-group scope.
 - [x] The account-only Bicep module builds and lints cleanly with the exemption tag and `disableLocalAuth=false`.
 - [x] ARM validation passes and what-if shows one in-place local-auth modification, zero creates, and zero deletes.
+- [x] The Microsoft `promptshields:latest` image manifest is available from MCR.
+- [x] `prompt-shields-container.bicep` builds and lints without errors or warnings.
+- [x] Resource-group ARM validation and what-if show only the new internal `ca-prompt-shields` app and the expected APIM product-policy modification, with no deletes.
+- [x] The D4 workload profile is configured for up to two nodes while the gateway and UI remain on Consumption.
+- [x] Direct container validation detects a known jailbreak prompt and allows a benign prompt.
+- [ ] End-to-end APIM validation returns HTTP `403` with `PromptAttackDetected` for a jailbreak while preserving the existing safe and harmful-content behavior.
 
 Pre-deployment checks:
 
@@ -197,6 +209,21 @@ Post-deployment proof:
 10. Confirm the `AppInsights` project connection targets the new component, generate one authenticated request, and locate its conversation ID and end-user identity in Foundry **Tracing**.
 
 ## Section 7: Validation Proof
+
+Prompt Shields extension predeployment validation date: 2026-09-11.
+
+- Microsoft documentation confirms `mcr.microsoft.com/azure-cognitive-services/contentsafety/promptshields:latest` is the official preview container for user-prompt jailbreak and document prompt-injection detection.
+- `docker manifest inspect` confirmed the current `promptshields:latest` image manifest is available from MCR.
+- `prompt-shields-container.bicep`, `content-safety.bicep`, and `resources.bicep` build and lint successfully; `deploy.sh` and `validate.sh` pass `bash -n`; `git diff --check` passes.
+- Resource-group ARM validation passed for `prompt-shields-container.bicep`; what-if shows exactly one create (`ca-prompt-shields`), zero modifications, and zero deletions.
+- The APIM product-policy ARM validation passed; what-if shows only the expected policy deployment and no resource deletion.
+- Static RBAC review confirms no new role assignment is required. Prompt Shields uses the existing dedicated Content Safety account key solely for connected-container metering.
+- The deployment raises only the `cs-d4` profile maximum from one to two nodes; `ca-shgw-demo` remains on Consumption.
+- Runtime readiness and direct jailbreak classification are complete; authenticated browser validation remains pending.
+- Live deployment created internal-only `ca-prompt-shields` on `cs-d4`; revision `ca-prompt-shields--20260911043818` is Healthy and Running with one replica.
+- Direct runtime calls returned class `0` for a benign prompt and class `1` for a known jailbreak, with jailbreak score approximately `0.998`.
+- The live APIM product policy contains `/contentsafety/jailbreak:analyze`, `PromptAttackDetected`, `/contentsafety/text:analyze`, and `ContentSafetyViolation`.
+- The public command-line test is intentionally blocked by Easy Auth without a fresh role-bearing ID token. Final browser validation remains pending and must use one of the documented demo users.
 
 Entra role-policy validation date: 2026-09-10.
 
