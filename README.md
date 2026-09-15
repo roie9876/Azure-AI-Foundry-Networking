@@ -90,6 +90,12 @@
   - [17.6 Deployment and Validation](#176-deployment-and-validation)
   - [17.7 Monitoring and Troubleshooting](#177-monitoring-and-troubleshooting)
   - [17.8 Security and Validation Checklist](#178-security-and-validation-checklist)
+- [Part 18: Developer Laptop Coding Clients Through the Self-Hosted Gateway](#part-18-developer-laptop-coding-clients-through-the-self-hosted-gateway)
+  - [18.1 Architecture](#181-architecture)
+  - [18.2 Implemented Codex CLI Path](#182-implemented-codex-cli-path)
+  - [18.3 Claude Code Compatibility](#183-claude-code-compatibility)
+  - [18.4 Audit and Privacy](#184-audit-and-privacy)
+  - [18.5 Deployment Guide](#185-deployment-guide)
 
 ---
 
@@ -3631,7 +3637,7 @@ az cognitiveservices account recover \
 
 ---
 
-## 18. Developer Laptop Coding Clients Through the Self-Hosted Gateway
+## Part 18: Developer Laptop Coding Clients Through the Self-Hosted Gateway
 
 Developer-hosted coding clients can use Microsoft Entra user identity to reach an APIM self-hosted AI gateway without storing model or gateway keys on the workstation. The implemented Codex CLI path uses the OpenAI Responses API. Claude Code requires a separately approved Anthropic-to-Responses protocol adapter or an Anthropic-compatible backend route; APIM does not translate these protocols automatically.
 
