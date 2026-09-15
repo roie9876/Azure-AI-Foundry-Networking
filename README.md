@@ -3631,12 +3631,38 @@ az cognitiveservices account recover \
 
 ---
 
-## Developer Laptop Coding Clients
+## 18. Developer Laptop Coding Clients Through the Self-Hosted Gateway
 
 Developer-hosted coding clients can use Microsoft Entra user identity to reach an APIM self-hosted AI gateway without storing model or gateway keys on the workstation. The implemented Codex CLI path uses the OpenAI Responses API. Claude Code requires a separately approved Anthropic-to-Responses protocol adapter or an Anthropic-compatible backend route; APIM does not translate these protocols automatically.
 
-- [Implementation and operations guide](deployment/ai-gateway-self-hosted/README.md#developer-laptop-coding-clients)
+### 18.1 Architecture
+
+The developer signs in with Azure CLI or an approved token broker. The coding client obtains a delegated Entra token and sends it over HTTPS to the Container Apps ingress. The local APIM self-hosted gateway validates the tenant, audience, delegated scope, app role, and immutable user object ID before applying model routing and per-user token limits. APIM then invokes the approved Microsoft Foundry model using managed identity.
+
 - [Editable Draw.io architecture](docs/coding-clients-self-hosted-ai-gateway.drawio)
+
+### 18.2 Implemented Codex CLI Path
+
+- A dedicated single-tenant Entra API exposes `AiGateway.Invoke` and requires `Gateway.Invoke`.
+- Approved users or direct group members receive the application role; assignment is required.
+- Codex invokes `az account get-access-token` through its command-authentication configuration.
+- The workstation stores no Foundry key, APIM subscription key, or client secret.
+- APIM pins the approved deployment and enforces a per-user token budget keyed by Entra `oid`.
+- The Container Apps proxy forwards only the bearer token and buffers the Responses API stream for audit extraction.
+
+### 18.3 Claude Code Compatibility
+
+Claude Code speaks the Anthropic Messages API, while the implemented gateway route speaks the OpenAI Responses API. A Claude Code deployment therefore needs either an approved protocol adapter before this route or a separate Anthropic-compatible APIM API and backend. Authentication, group assignment, gateway policy, and audit principles remain the same.
+
+### 18.4 Audit and Privacy
+
+Each completed Codex request records the Entra tenant and user object IDs, account name, client application ID, status, APIM request ID, and input/output/total token usage in Log Analytics. Prompt and answer capture is explicitly opt-in, bounded by a configurable character limit, and disabled by default in the public example. Bearer tokens and static secrets are never logged.
+
+### 18.5 Deployment Guide
+
+- [Implementation and operations guide](deployment/ai-gateway-self-hosted/README.md#developer-laptop-coding-clients)
+- [Codex API policy](deployment/ai-gateway-self-hosted/codex-cli-api.bicep)
+- [Entra and client setup](deployment/ai-gateway-self-hosted/setup-codex-cli.sh)
 
 ---
 
