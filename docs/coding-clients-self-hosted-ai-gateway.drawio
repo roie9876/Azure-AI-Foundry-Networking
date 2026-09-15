@@ -26,7 +26,7 @@
           <mxGeometry x="90" y="570" width="300" height="100" as="geometry"/>
         </mxCell>
         <mxCell id="entra" value="Microsoft Entra ID&#xa;Delegated scope + app role&#xa;User/group assignment" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F4EA;strokeColor=#82B366;strokeWidth=2;fontSize=15;fontStyle=1;" vertex="1" parent="1">
-          <mxGeometry x="530" y="180" width="260" height="100" as="geometry"/>
+          <mxGeometry x="530" y="560" width="260" height="120" as="geometry"/>
         </mxCell>
         <mxCell id="ingress" value="Azure Container Apps ingress&#xa;HTTPS endpoint" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;strokeWidth=2;fontSize=15;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="850" y="180" width="260" height="100" as="geometry"/>
@@ -40,14 +40,16 @@
         <mxCell id="logs" value="Azure Monitor / Log Analytics&#xa;User object ID, status, latency&#xa;Input/output tokens&#xa;Optional bounded prompt/answer audit" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#666666;strokeWidth=2;fontSize=14;" vertex="1" parent="1">
           <mxGeometry x="850" y="560" width="360" height="120" as="geometry"/>
         </mxCell>
-        <mxCell id="note" value="Protocol boundary: Codex can call the Responses route directly. Claude Code requires a separately deployed compatible adapter and model path; APIM does not automatically translate Anthropic Messages requests." style="shape=note;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontSize=13;align=left;verticalAlign=middle;spacing=10;" vertex="1" parent="1">
-          <mxGeometry x="510" y="390" width="500" height="110" as="geometry"/>
-        </mxCell>
         <mxCell id="e-auth" value="1. Request delegated token" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#F57C00;strokeWidth=2;dashed=1;endArrow=block;endFill=1;fontSize=12;" edge="1" parent="1" source="azcli" target="entra">
           <mxGeometry relative="1" as="geometry"/>
         </mxCell>
         <mxCell id="e-token" value="2. JWT" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#F57C00;strokeWidth=2;dashed=1;endArrow=block;endFill=1;fontSize=12;" edge="1" parent="1" source="entra" target="codex">
-          <mxGeometry relative="1" as="geometry"/>
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="460" y="620"/>
+              <mxPoint x="460" y="230"/>
+            </Array>
+          </mxGeometry>
         </mxCell>
         <mxCell id="e-claude-adapter" value="Compatible adapter" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#666666;strokeWidth=2;dashed=1;endArrow=block;endFill=1;fontSize=12;" edge="1" parent="1" source="claude" target="adapter">
           <mxGeometry relative="1" as="geometry"/>

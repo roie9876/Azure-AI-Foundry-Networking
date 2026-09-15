@@ -3645,6 +3645,8 @@ Developer-hosted coding clients can use Microsoft Entra user identity to reach a
 
 The developer signs in with Azure CLI or an approved token broker. The coding client obtains a delegated Entra token and sends it over HTTPS to the Container Apps ingress. The local APIM self-hosted gateway validates the tenant, audience, delegated scope, app role, and immutable user object ID before applying model routing and per-user token limits. APIM then invokes the approved Microsoft Foundry model using managed identity.
 
+![Developer coding clients through an APIM self-hosted AI gateway](docs/coding-clients-self-hosted-ai-gateway.png)
+
 - [Editable Draw.io architecture](docs/coding-clients-self-hosted-ai-gateway.drawio)
 
 ### 18.2 Implemented Codex CLI Path

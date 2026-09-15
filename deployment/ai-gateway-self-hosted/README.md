@@ -235,7 +235,11 @@ After association and API assignment, run an end-to-end model request:
 
 ## Developer laptop coding clients
 
-The [coding client architecture](../../docs/coding-clients-self-hosted-ai-gateway.drawio) shows the authentication, request, inference, and telemetry paths from a developer laptop through the self-hosted gateway. It uses generic names and contains no tenant, user, subscription, or customer identifiers.
+The coding client architecture shows the authentication, request, inference, and telemetry paths from a developer laptop through the self-hosted gateway. It uses generic names and contains no tenant, user, subscription, or customer identifiers.
+
+![Developer coding clients through an APIM self-hosted AI gateway](../../docs/coding-clients-self-hosted-ai-gateway.png)
+
+[Open the editable Draw.io architecture](../../docs/coding-clients-self-hosted-ai-gateway.drawio).
 
 The implemented path uses Codex CLI, the OpenAI Responses API, and an approved Codex-capable model deployment. Claude Code uses the Anthropic Messages API and cannot call this Responses route directly. Supporting Claude Code requires a separately deployed, approved protocol adapter that converts Anthropic Messages requests and responses to the backend contract. APIM provides gateway policy enforcement but does not automatically perform that protocol translation.
 
