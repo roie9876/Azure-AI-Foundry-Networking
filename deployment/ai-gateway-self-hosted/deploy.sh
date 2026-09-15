@@ -11,12 +11,12 @@ if [[ -f "$ENV_FILE" ]]; then
   set +a
 fi
 
-SUBSCRIPTION_ID="${SUBSCRIPTION_ID:-00000000-0000-0000-0000-000000000000}"
+SUBSCRIPTION_ID="${SUBSCRIPTION_ID:?Set SUBSCRIPTION_ID in $ENV_FILE}"
 LOCATION="${LOCATION:-swedencentral}"
 RESOURCE_GROUP="${RESOURCE_GROUP:-rg-aigw-shgw-demo}"
-SUFFIX="${SUFFIX:-demo1234}"
+SUFFIX="${SUFFIX:?Set SUFFIX in $ENV_FILE}"
 PUBLISHER_NAME="${PUBLISHER_NAME:-AI Gateway Demo}"
-PUBLISHER_EMAIL="${PUBLISHER_EMAIL:-admin@example.com}"
+PUBLISHER_EMAIL="${PUBLISHER_EMAIL:?Set PUBLISHER_EMAIL in $ENV_FILE}"
 APIM_NAME="apim-aigw-shgw-${SUFFIX}"
 GATEWAY_NAME="shgw-demo"
 DEPLOYMENT_NAME="aigw-shgw-demo"
@@ -156,6 +156,8 @@ deploy_gateway_container() {
       publisherEmail="$PUBLISHER_EMAIL" \
       deployGatewayContainer=true \
       deployDemoUi="$deploy_ui" \
+      logCodexContent="${CODEX_LOG_CONTENT:-false}" \
+      codexContentMaxChars="${CODEX_CONTENT_MAX_CHARS:-8000}" \
       gatewayAuthValue="$gateway_auth" \
       uiImage="$ui_image" \
       registryServer="$registry_server" \
@@ -181,6 +183,14 @@ assign_foundry_api() {
       --query '[].{id:name,displayName:displayName,path:path}' --output table
     exit 1
   fi
+
+  echo "[INFO] Enabling HTTP for the localhost sidecar hop and HTTPS for external gateway calls"
+  az rest \
+    --method patch \
+    --url "https://management.azure.com/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${RESOURCE_GROUP}/providers/Microsoft.ApiManagement/service/${APIM_NAME}/apis/${api_id}?api-version=2024-05-01" \
+    --headers 'Content-Type=application/json' \
+    --body '{"properties":{"protocols":["http","https"]}}' \
+    --output none
 
   echo "[INFO] Assigning API $api_id to self-hosted gateway $GATEWAY_NAME"
   az rest \

@@ -13,6 +13,13 @@ param publisherEmail string
 param deployGatewayContainer bool
 param deployDemoUi bool
 
+@description('Persist bounded Codex end-user questions and answers in Container Apps console logs.')
+param logCodexContent bool = false
+
+@description('Maximum characters stored for each Codex question or answer.')
+@minValue(256)
+param codexContentMaxChars int = 8000
+
 @secure()
 param gatewayAuthValue string
 
@@ -373,6 +380,14 @@ resource gatewayContainer 'Microsoft.App/containerApps@2024-03-01' = if (deployG
             {
               name: 'OTEL_AGENT_ID'
               value: 'ai-gateway-external-agent'
+            }
+            {
+              name: 'CODEX_LOG_CONTENT'
+              value: string(logCodexContent)
+            }
+            {
+              name: 'CODEX_CONTENT_MAX_CHARS'
+              value: string(codexContentMaxChars)
             }
           ]
           resources: {

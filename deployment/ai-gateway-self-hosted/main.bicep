@@ -23,6 +23,13 @@ param deployGatewayContainer bool = false
 @description('Expose the end-user UI after Foundry has generated the project subscription.')
 param deployDemoUi bool = false
 
+@description('Persist bounded Codex end-user questions and answers in Container Apps console logs.')
+param logCodexContent bool = false
+
+@description('Maximum characters stored for each Codex question or answer.')
+@minValue(256)
+param codexContentMaxChars int = 8000
+
 @secure()
 @description('Complete APIM gateway authentication value: GatewayKey followed by the generated token.')
 param gatewayAuthValue string = ''
@@ -71,6 +78,8 @@ module demoResources 'resources.bicep' = {
     publisherEmail: publisherEmail
     deployGatewayContainer: deployGatewayContainer
     deployDemoUi: deployDemoUi
+    logCodexContent: logCodexContent
+    codexContentMaxChars: codexContentMaxChars
     gatewayAuthValue: gatewayAuthValue
     uiImage: uiImage
     registryServer: registryServer

@@ -17,3 +17,4 @@ azurevpnconfig-withcert.xml
 hub-vnet-foundry.AzureVpnProfile.xml
 *.env.bak
 *.drawio.bkp
+deployment/ai-gateway-self-hosted/main.json

@@ -3366,10 +3366,10 @@ The validated lab uses these components:
 | Self-hosted APIM gateway | `ca-shgw-demo` gateway container | Authenticates the caller, executes the product policy, blocks or forwards |
 | Prompt Shields runtime | `ca-prompt-shields` | Internal-only jailbreak and prompt-injection detection container |
 | Content Safety runtime | `ca-content-safety` | Internal-only text-analysis container; classification runs here |
-| Container Apps environment | `cae-aigw-shgw-demo1234` | Shared customer-hosted network boundary for the gateway and safety containers |
+| Container Apps environment | `cae-aigw-shgw-<suffix>` | Shared customer-hosted network boundary for the gateway and safety containers |
 | Dedicated workload profile | `cs-d4` | Up to two D4 nodes; one 4-vCPU/16-GiB replica per Microsoft safety container |
-| Container billing account | `csc-aigw-shgw-demo1234` | S0 licensing, key validation, model-key retrieval, and usage metering |
-| APIM management plane | `apim-aigw-shgw-demo1234` | Stores the API, generated product, subscription, and custom inbound policy |
+| Container billing account | `csc-aigw-shgw-<suffix>` | S0 licensing, key validation, model-key retrieval, and usage metering |
+| APIM management plane | `apim-aigw-shgw-<suffix>` | Stores the API, generated product, subscription, and custom inbound policy |
 | Foundry model | `gpt-4.1-mini` | Processes only requests allowed by the local policy |
 
 The Content Safety Container App has **internal ingress only**. Clients cannot call it
@@ -3417,7 +3417,7 @@ container is a **connected Azure AI container**. It requires all three startup v
 - `Billing=https://<content-safety-account>.cognitiveservices.azure.com/`
 - `ApiKey=<content-safety-account-key>`
 
-The validated deployment uses `csc-aigw-shgw-demo1234` exclusively for this purpose. APIM
+The validated deployment uses `csc-aigw-shgw-<suffix>` exclusively for this purpose. APIM
 does **not** send prompts to that Azure endpoint. Classification happens in
 `ca-content-safety`; the account validates the container license, supplies encrypted
 model material, and receives usage-meter records.
@@ -3461,10 +3461,10 @@ There are four related management surfaces. They do not configure the same thing
 
 The live portal path for this lab is:
 
-1. Open `apim-aigw-shgw-demo1234`.
+1. Open `apim-aigw-shgw-<suffix>`.
 2. Select **Products**.
 3. Open the generated project product beginning with
-   `aif-aigw-shgw-demo1234-proj-aigw-shgw-demo`.
+  `aif-aigw-shgw-<suffix>-<project-name>`.
 4. Select **Policies**.
 5. Edit and save the inbound policy.
 
@@ -3553,7 +3553,7 @@ The validated sequence returned:
 The demo endpoint is:
 
 ```text
-https://ca-shgw-demo.environment-domain.swedencentral.azurecontainerapps.io/
+https://<container-app>.<environment-domain>.<region>.azurecontainerapps.io/
 ```
 
 ### 17.7 Monitoring and Troubleshooting
@@ -3593,7 +3593,7 @@ The billing account may be recovered during soft-delete retention:
 az cognitiveservices account recover \
   --location swedencentral \
   --resource-group rg-aigw-shgw-demo \
-  --name csc-aigw-shgw-demo1234
+  --name csc-aigw-shgw-<suffix>
 ```
 
 ### 17.8 Security and Validation Checklist
@@ -3628,6 +3628,15 @@ az cognitiveservices account recover \
 - [APIM `send-request` policy](https://learn.microsoft.com/azure/api-management/send-request-policy)
 - [Azure Container Apps container limitations](https://learn.microsoft.com/azure/container-apps/containers#limitations)
 - [Azure Container Apps workload profiles](https://learn.microsoft.com/azure/container-apps/workload-profiles-overview)
+
+---
+
+## Developer Laptop Coding Clients
+
+Developer-hosted coding clients can use Microsoft Entra user identity to reach an APIM self-hosted AI gateway without storing model or gateway keys on the workstation. The implemented Codex CLI path uses the OpenAI Responses API. Claude Code requires a separately approved Anthropic-to-Responses protocol adapter or an Anthropic-compatible backend route; APIM does not translate these protocols automatically.
+
+- [Implementation and operations guide](deployment/ai-gateway-self-hosted/README.md#developer-laptop-coding-clients)
+- [Editable Draw.io architecture](docs/coding-clients-self-hosted-ai-gateway.drawio)
 
 ---
 

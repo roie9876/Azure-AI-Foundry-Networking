@@ -36,11 +36,13 @@ const tracer = trace.getTracer("ai-gateway-external-app");
 
 const port = Number(process.env.PORT || 3000);
 const gatewayUrl = process.env.GATEWAY_URL || "http://localhost:8080";
-const gatewayHost = process.env.GATEWAY_HOST || "apim-aigw-shgw-demo1234.azure-api.net";
-const apiPath = process.env.API_PATH || "aif-aigw-shgw-demo1234";
+const gatewayHost = process.env.GATEWAY_HOST || "localhost";
+const apiPath = process.env.API_PATH || "foundry-api";
 const model = process.env.MODEL || "gpt-4.1-mini";
 const apiKey = process.env.API_KEY || "";
 const agentId = process.env.OTEL_AGENT_ID || "ai-gateway-external-agent";
+const logCodexContent = process.env.CODEX_LOG_CONTENT?.toLowerCase() === "true";
+const codexContentMaxChars = Number(process.env.CODEX_CONTENT_MAX_CHARS || 8_000);
 const indexHtml = fs.readFileSync(path.join(__dirname, "public", "index.html"));
 
 function sendJson(response, status, body) {
@@ -86,6 +88,75 @@ function getIdentity(request) {
   }
 }
 
+function getBearerIdentity(authorization) {
+  if (typeof authorization !== "string" || !authorization.startsWith("Bearer ")) return null;
+
+  try {
+    const token = authorization.slice("Bearer ".length).trim();
+    const payload = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString("utf8"));
+    return {
+      tenantId: payload.tid,
+      objectId: payload.oid,
+      account: payload.preferred_username || payload.upn || payload.email,
+      clientAppId: payload.azp || payload.appid,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function extractCodexQuestion(requestBody) {
+  try {
+    const payload = JSON.parse(requestBody.toString("utf8"));
+    if (typeof payload.input === "string") return payload.input;
+
+    const questions = (payload.input || [])
+      .filter((item) => item?.role === "user")
+      .map((item) => (Array.isArray(item.content) ? item.content : [item.content])
+        .map((content) => typeof content === "string" ? content : content?.text)
+        .filter((text) => typeof text === "string")
+        .join("\n"))
+      .filter(Boolean);
+    return questions.at(-1) || "";
+  } catch {
+    return "";
+  }
+}
+
+function extractCodexResponse(responseBody, contentType) {
+  try {
+    if (!contentType.includes("text/event-stream")) {
+      const response = JSON.parse(responseBody.toString("utf8"));
+      return { response, answer: extractText(response) };
+    }
+
+    let response = null;
+    const completedText = [];
+    for (const line of responseBody.toString("utf8").split(/\r?\n/)) {
+      if (!line.startsWith("data:")) continue;
+      const data = line.slice("data:".length).trim();
+      if (!data || data === "[DONE]") continue;
+      const event = JSON.parse(data);
+      if (event.type === "response.completed") response = event.response;
+      if (event.type === "response.output_text.done" && typeof event.text === "string") {
+        completedText.push(event.text);
+      }
+    }
+    return {
+      response,
+      answer: completedText.join("\n") || (response ? extractText(response) : ""),
+    };
+  } catch {
+    return { response: null, answer: "" };
+  }
+}
+
+function truncateAuditContent(value) {
+  return value.length <= codexContentMaxChars
+    ? value
+    : `${value.slice(0, codexContentMaxChars)} [truncated]`;
+}
+
 function callGateway(targetUrl, method, headers, body) {
   return new Promise((resolve, reject) => {
     const target = new URL(targetUrl);
@@ -97,6 +168,7 @@ function callGateway(targetUrl, method, headers, body) {
         resolve({
           status: gatewayResponse.statusCode || 502,
           contentType: gatewayResponse.headers["content-type"] || "application/json",
+          requestId: gatewayResponse.headers["apim-request-id"] || gatewayResponse.headers["x-ms-request-id"],
           body: Buffer.concat(chunks),
         });
       });
@@ -232,8 +304,10 @@ async function runModel(request, response) {
 }
 
 async function proxyGateway(request, response) {
+  const authorization = request.headers.authorization;
   const identityToken = request.headers["x-ms-token-aad-id-token"];
-  if (!identityToken) {
+  const bearerIdentity = getBearerIdentity(authorization);
+  if (!authorization && !identityToken) {
     sendJson(response, 401, { error: "Microsoft Entra authentication is required." });
     return;
   }
@@ -254,13 +328,38 @@ async function proxyGateway(request, response) {
       {
         "Content-Type": request.headers["content-type"] || "application/json",
         "Content-Length": body.length,
-        "Authorization": `Bearer ${identityToken}`,
+        "Authorization": authorization || `Bearer ${identityToken}`,
         "api-key": request.headers["api-key"] || apiKey,
         "Host": gatewayHost,
         "X-Forwarded-Proto": "https",
       },
       request.method === "GET" || request.method === "HEAD" ? null : body,
     );
+    if (request.url.startsWith("/codex/")) {
+      const codexResult = extractCodexResponse(gatewayResponse.body, gatewayResponse.contentType);
+      const usage = codexResult.response?.usage || {};
+      const audit = {
+        category: "CodexEndUserAudit",
+        timestamp: new Date().toISOString(),
+        tenantId: bearerIdentity?.tenantId || "unknown",
+        userObjectId: bearerIdentity?.objectId || "unknown",
+        userAccount: bearerIdentity?.account || "unknown",
+        clientAppId: bearerIdentity?.clientAppId || "unknown",
+        method: request.method,
+        path: request.url,
+        gatewayStatus: gatewayResponse.status,
+        gatewayRequestId: gatewayResponse.requestId || "unknown",
+        inputTokens: Number.isFinite(usage.input_tokens) ? usage.input_tokens : null,
+        outputTokens: Number.isFinite(usage.output_tokens) ? usage.output_tokens : null,
+        totalTokens: Number.isFinite(usage.total_tokens) ? usage.total_tokens : null,
+        contentLogged: logCodexContent,
+      };
+      if (logCodexContent) {
+        audit.userQuestion = truncateAuditContent(extractCodexQuestion(body));
+        audit.assistantAnswer = truncateAuditContent(codexResult.answer);
+      }
+      console.log(JSON.stringify(audit));
+    }
     response.writeHead(gatewayResponse.status, {
       "Content-Type": gatewayResponse.contentType,
       "Cache-Control": "no-store",
@@ -302,7 +401,8 @@ const server = http.createServer(async (request, response) => {
   }
   if (
     request.url === "/status-0123456789abcdef" ||
-    request.url.startsWith(`/${apiPath.replace(/^\/+|\/+$/g, "")}/`)
+    request.url.startsWith(`/${apiPath.replace(/^\/+|\/+$/g, "")}/`) ||
+    request.url.startsWith("/codex/")
   ) {
     await proxyGateway(request, response);
     return;
@@ -310,6 +410,10 @@ const server = http.createServer(async (request, response) => {
   sendJson(response, 404, { error: "Not found." });
 });
 
-server.listen(port, "0.0.0.0", () => {
-  console.log(`Demo UI listening on port ${port}`);
-});
+if (require.main === module) {
+  server.listen(port, "0.0.0.0", () => {
+    console.log(`Demo UI listening on port ${port}`);
+  });
+}
+
+module.exports = { extractCodexQuestion, extractCodexResponse };

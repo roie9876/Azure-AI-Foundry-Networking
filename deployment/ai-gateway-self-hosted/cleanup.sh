@@ -2,7 +2,16 @@
 
 set -euo pipefail
 
-SUBSCRIPTION_ID="${SUBSCRIPTION_ID:-00000000-0000-0000-0000-000000000000}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="${ENV_FILE:-$SCRIPT_DIR/demo.env}"
+
+if [[ -f "$ENV_FILE" ]]; then
+  set -a
+  source "$ENV_FILE"
+  set +a
+fi
+
+SUBSCRIPTION_ID="${SUBSCRIPTION_ID:?Set SUBSCRIPTION_ID in $ENV_FILE}"
 RESOURCE_GROUP="${RESOURCE_GROUP:-rg-aigw-shgw-demo}"
 
 az account set --subscription "$SUBSCRIPTION_ID"

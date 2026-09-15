@@ -11,10 +11,10 @@ if [[ -f "$ENV_FILE" ]]; then
   set +a
 fi
 
-SUBSCRIPTION_ID="${SUBSCRIPTION_ID:-00000000-0000-0000-0000-000000000000}"
+SUBSCRIPTION_ID="${SUBSCRIPTION_ID:?Set SUBSCRIPTION_ID in $ENV_FILE}"
 LOCATION="${LOCATION:-swedencentral}"
 RESOURCE_GROUP="${RESOURCE_GROUP:-rg-aigw-shgw-demo}"
-SUFFIX="${SUFFIX:-demo1234}"
+SUFFIX="${SUFFIX:?Set SUFFIX in $ENV_FILE}"
 APIM_NAME="apim-aigw-shgw-${SUFFIX}"
 AI_ACCOUNT_NAME="aif-aigw-shgw-${SUFFIX}"
 CONTAINER_APP_NAME="ca-shgw-demo"
@@ -22,11 +22,14 @@ CONTENT_SAFETY_CONTAINER_ACCOUNT_NAME="csc-aigw-shgw-${SUFFIX}"
 CONTENT_SAFETY_APP_NAME="ca-content-safety"
 PROMPT_SHIELDS_APP_NAME="ca-prompt-shields"
 GATEWAY_NAME="shgw-demo"
+CODEX_APP_DISPLAY_NAME="Codex CLI Self-Hosted AI Gateway"
+CODEX_API_ID="codex-cli-foundry"
+CODEX_MODEL_DEPLOYMENT="${CODEX_MODEL_DEPLOYMENT:-gpt-5.1-codex}"
 MODE="${1:-preflight}"
 
 case "$MODE" in
-  preflight|deployed|functional|ui|safety|safety-container|prompt-shields-container) ;;
-  *) echo "Usage: $0 [preflight|deployed|functional|ui|safety|safety-container|prompt-shields-container]" >&2; exit 2 ;;
+  preflight|deployed|functional|ui|codex|safety|safety-container|prompt-shields-container) ;;
+  *) echo "Usage: $0 [preflight|deployed|functional|ui|codex|safety|safety-container|prompt-shields-container]" >&2; exit 2 ;;
 esac
 
 for command_name in az jq curl; do
@@ -40,7 +43,7 @@ az account set --subscription "$SUBSCRIPTION_ID"
 
 preflight() {
   echo "[CHECK] Shell syntax"
-  bash -n "$SCRIPT_DIR/deploy.sh" "$SCRIPT_DIR/validate.sh" "$SCRIPT_DIR/cleanup.sh"
+  bash -n "$SCRIPT_DIR/deploy.sh" "$SCRIPT_DIR/validate.sh" "$SCRIPT_DIR/cleanup.sh" "$SCRIPT_DIR/setup-codex-cli.sh"
 
   echo "[CHECK] Bicep build and lint"
   az bicep build --file "$SCRIPT_DIR/main.bicep" --stdout >/dev/null
@@ -51,6 +54,8 @@ preflight() {
   az bicep lint --file "$SCRIPT_DIR/content-safety-container.bicep"
   az bicep build --file "$SCRIPT_DIR/prompt-shields-container.bicep" --stdout >/dev/null
   az bicep lint --file "$SCRIPT_DIR/prompt-shields-container.bicep"
+  az bicep build --file "$SCRIPT_DIR/codex-cli-api.bicep" --stdout >/dev/null
+  az bicep lint --file "$SCRIPT_DIR/codex-cli-api.bicep"
 
   echo "[CHECK] Required providers"
   for namespace in Microsoft.ApiManagement Microsoft.App Microsoft.CognitiveServices Microsoft.OperationalInsights; do
@@ -158,6 +163,49 @@ functional() {
   [[ "$http_code" == '200' ]] || { echo "[ERROR] Model call returned HTTP $http_code" >&2; jq . "$response_file"; exit 1; }
   jq -e '.. | strings | select(contains("SELF_HOSTED_AZURE_OK"))' "$response_file" >/dev/null
   echo "[OK] Functional model call passed through https://${fqdn}"
+}
+
+codex() {
+  local app_id audience fqdn token_value wrong_token response_file
+  local success_code missing_code wrong_audience_code api_assigned
+
+  app_id="$(az ad app list --filter "displayName eq '$CODEX_APP_DISPLAY_NAME'" --query '[0].appId' --output tsv)"
+  [[ -n "$app_id" ]] || { echo '[ERROR] Run setup-codex-cli.sh first' >&2; exit 1; }
+  audience="api://${app_id}"
+  api_assigned="$(az rest --method get \
+    --url "https://management.azure.com/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${RESOURCE_GROUP}/providers/Microsoft.ApiManagement/service/${APIM_NAME}/gateways/${GATEWAY_NAME}/apis?api-version=2024-05-01" \
+    --query "value[?name=='${CODEX_API_ID}'].name | [0]" --output tsv)"
+  [[ "$api_assigned" == "$CODEX_API_ID" ]]
+
+  fqdn="$(az containerapp show --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" --query properties.configuration.ingress.fqdn --output tsv)"
+  token_value="$(az account get-access-token --resource "$audience" --query accessToken --output tsv)"
+  response_file="$(mktemp)"
+  trap "rm -f '$response_file'; unset token_value wrong_token" EXIT
+
+  success_code="$(curl --silent --show-error --connect-timeout 10 --max-time 120 \
+    --output "$response_file" --write-out '%{http_code}' \
+    --request POST "https://${fqdn}/codex/openai/v1/responses" \
+    --header "Authorization: Bearer ${token_value}" \
+    --header 'Content-Type: application/json' \
+    --data '{"model":"must-be-overridden","input":"Reply with exactly CODEX_ENTRA_GATEWAY_OK","stream":false}')"
+  [[ "$success_code" == '200' ]]
+  jq -e --arg model "$CODEX_MODEL_DEPLOYMENT" '.model == $model and ([.output[]?.content[]?.text] | join("") | contains("CODEX_ENTRA_GATEWAY_OK"))' "$response_file" >/dev/null
+
+  missing_code="$(curl --silent --show-error --connect-timeout 10 --max-time 30 \
+    --output /dev/null --write-out '%{http_code}' \
+    --request POST "https://${fqdn}/codex/openai/v1/responses" \
+    --header 'Content-Type: application/json' --data '{"input":"x"}')"
+  [[ "$missing_code" == '401' ]]
+
+  wrong_token="$(az account get-access-token --resource https://management.azure.com/ --query accessToken --output tsv)"
+  wrong_audience_code="$(curl --silent --show-error --connect-timeout 10 --max-time 30 \
+    --output /dev/null --write-out '%{http_code}' \
+    --request POST "https://${fqdn}/codex/openai/v1/responses" \
+    --header "Authorization: Bearer ${wrong_token}" \
+    --header 'Content-Type: application/json' --data '{"input":"x"}')"
+  [[ "$wrong_audience_code" == '401' ]]
+
+  echo "[OK] Codex Entra request returned 200 through the self-hosted gateway; missing and wrong-audience tokens returned 401"
 }
 
 ui() {
@@ -305,6 +353,7 @@ case "$MODE" in
   deployed) deployed ;;
   functional) functional ;;
   ui) ui ;;
+  codex) codex ;;
   safety) safety ;;
   safety-container) safety_container ;;
   prompt-shields-container) prompt_shields_container ;;

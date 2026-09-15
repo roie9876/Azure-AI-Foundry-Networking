@@ -24,7 +24,7 @@ Foundry's rewriter leaves it alone.
   via a project connection. `query_type: simple`.
 
 Direct queries against the index (via VPN or VNet) return perfect data —
-every document has `url = https://tenant-name.sharepoint.com/...`.
+every document has `url = https://<tenant-name>.sharepoint.com/...`.
 
 ## The problem
 
@@ -102,7 +102,7 @@ SharePoint URL as the last two lines of `content`. Prompt the model to
 cite `[title](<URL-from-last-line-of-content>)`. The model streams the
 correct link...
 
-> In the first second I see the correct `https://tenant-name.sharepoint.com/...` link,
+> In the first second I see the correct `https://<tenant-name>.sharepoint.com/...` link,
 > and then something suddenly rewrites it to the wrong one.
 
 ### Root cause — the citation rewriter
@@ -135,7 +135,7 @@ italic) gets rewritten. Plain text passes through untouched.
      מקורות:
 
      המב 50.02 מתן תמיכות מתקציב הביטחון למוסדות ציבור.pdf
-     https://tenant-name.sharepoint.com/sites/lab511-demo/Shared%20Documents/Malan/...pdf
+    https://<tenant-name>.sharepoint.com/sites/<site-name>/Shared%20Documents/<file-name>.pdf
      ```
 
 Playground's Markdown renderer auto-linkifies bare URLs, and the
